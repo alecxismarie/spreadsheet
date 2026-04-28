@@ -8,8 +8,14 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test": "npm run test:smoke",
+    "test:smoke": "playwright test",
+    "db:start": "docker compose up -d mysql",
+    "db:stop": "docker compose stop mysql",
+    "db:health": "tsx scripts/db-health.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:status": "prisma migrate status",
     "prisma:seed": "prisma db seed",
     "format": "prettier --write ."
   },
@@ -28,6 +34,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.10.2",
     "@types/react": "latest",
@@ -41,5 +48,8 @@
     "tailwindcss": "^3.4.17",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
+  },
+  "overrides": {
+    "postcss": "$postcss"
   }
 }

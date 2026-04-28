@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import Papa from "papaparse";
 import { readSheet } from "read-excel-file/universal";
 import { canAccessMember } from "@/lib/auth/permissions";
-import type { AppSession } from "@/lib/auth/session";
+import { refreshSession, type AppSession } from "@/lib/auth/session";
 import { endOfDateFilter, startOfDateFilter } from "@/lib/domain/date-range";
 import { prisma } from "@/lib/prisma";
 
@@ -100,6 +100,12 @@ export async function previewImportFile(file: File | null): Promise<ImportPrevie
 }
 
 export async function importRowsAsDraft(session: AppSession, input: unknown): Promise<ImportRowsState> {
+  const currentSession = await refreshSession(session);
+  if (!currentSession) {
+    return { ok: false, message: "Your session is no longer active. Sign in again." };
+  }
+  session = currentSession;
+
   const parsed = parseImportInput(input);
   if (parsed.ok !== true) return parsed;
 
@@ -224,6 +230,12 @@ export async function importRowsAsDraft(session: AppSession, input: unknown): Pr
 }
 
 export async function removeImportedBatch(session: AppSession, input: unknown): Promise<RemoveImportBatchState> {
+  const currentSession = await refreshSession(session);
+  if (!currentSession) {
+    return { ok: false, message: "Your session is no longer active. Sign in again." };
+  }
+  session = currentSession;
+
   const data = input as Record<string, unknown>;
   const reportId = asString(data.reportId);
   const importBatchId = asString(data.importBatchId);

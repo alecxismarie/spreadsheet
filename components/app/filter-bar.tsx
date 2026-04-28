@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { Route } from "next";
 import type { Membership, ReportingPeriod, ReportingPeriodType, SubmissionStatus, User } from "@prisma/client";
 
-type Member = Membership & { user: User };
+type Member = Pick<Membership, "userId"> & { user: Pick<User, "name"> };
 
 export function FilterBar({
   members,

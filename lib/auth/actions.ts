@@ -1,9 +1,20 @@
 "use server";
 
 import bcrypt from "bcryptjs";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createSession, clearSession } from "@/lib/auth/session";
+import {
+  clearSignInRateLimit,
+  INVALID_SIGN_IN_MESSAGE,
+  isSignInRateLimited,
+  normalizeSignInEmail,
+  pruneExpiredSignInRateLimits,
+  RATE_LIMITED_SIGN_IN_MESSAGE,
+  recordFailedSignIn,
+  resolveClientIp
+} from "@/lib/auth/rate-limit";
 import { prisma } from "@/lib/prisma";
 
 const signInSchema = z.object({
@@ -25,21 +36,33 @@ export async function signInAction(_state: SignInState, formData: FormData): Pro
     return { error: "Enter a valid email and password." };
   }
 
+  const email = normalizeSignInEmail(parsed.data.email);
+  const headerStore = await headers();
+  const ip = resolveClientIp(headerStore);
+
+  if (await isSignInRateLimited(email, ip)) {
+    return { error: RATE_LIMITED_SIGN_IN_MESSAGE };
+  }
+
   const user = await prisma.user.findUnique({
-    where: { email: parsed.data.email.toLowerCase() },
+    where: { email },
     include: { memberships: { where: { active: true }, orderBy: { createdAt: "asc" } } }
   });
 
   if (!user || !(await bcrypt.compare(parsed.data.password, user.passwordHash))) {
-    return { error: "Invalid email or password." };
+    await recordFailedSignIn(email, ip);
+    return { error: INVALID_SIGN_IN_MESSAGE };
   }
 
   const membership = user.memberships[0];
   if (!membership) {
-    return { error: "No active workspace membership found." };
+    await recordFailedSignIn(email, ip);
+    return { error: INVALID_SIGN_IN_MESSAGE };
   }
 
-  await createSession(user.id, membership.workspaceId, membership.role);
+  await clearSignInRateLimit(email, ip);
+  await pruneExpiredSignInRateLimits();
+  await createSession(user.id, membership.workspaceId, membership.role, user.sessionVersion);
   redirect("/overview");
 }
 

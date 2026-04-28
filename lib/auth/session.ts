@@ -12,6 +12,7 @@ export type AppSession = {
   userId: string;
   workspaceId: string;
   role: Role;
+  sessionVersion: number;
   expiresAt: number;
 };
 
@@ -42,16 +43,21 @@ function decodeSession(value?: string): AppSession | null {
   const right = Buffer.from(expected);
   if (left.length !== right.length || !timingSafeEqual(left, right)) return null;
 
-  const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as AppSession;
-  if (session.expiresAt < Date.now()) return null;
-  return session;
+  try {
+    const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as AppSession;
+    if (session.expiresAt < Date.now()) return null;
+    return session;
+  } catch {
+    return null;
+  }
 }
 
-export async function createSession(userId: string, workspaceId: string, role: Role) {
+export async function createSession(userId: string, workspaceId: string, role: Role, sessionVersion: number) {
   const session: AppSession = {
     userId,
     workspaceId,
     role,
+    sessionVersion,
     expiresAt: Date.now() + 1000 * 60 * 60 * 12
   };
 
@@ -81,8 +87,36 @@ export async function requireSession() {
   return session;
 }
 
-export async function getCurrentUser() {
+export async function refreshSession(session: AppSession): Promise<AppSession | null> {
+  const membership = await prisma.membership.findFirst({
+    where: {
+      userId: session.userId,
+      workspaceId: session.workspaceId,
+      active: true
+    },
+    select: {
+      role: true,
+      user: { select: { sessionVersion: true } }
+    }
+  });
+
+  if (!membership) return null;
+  if (session.sessionVersion !== membership.user.sessionVersion) return null;
+  return { ...session, role: membership.role };
+}
+
+export async function requireCurrentSession() {
   const session = await requireSession();
+  const currentSession = await refreshSession(session);
+  if (!currentSession) {
+    await clearSession();
+    redirect("/signin");
+  }
+  return currentSession;
+}
+
+export async function getCurrentUser() {
+  const session = await requireCurrentSession();
   const user = await prisma.user.findUniqueOrThrow({
     where: { id: session.userId },
     include: {

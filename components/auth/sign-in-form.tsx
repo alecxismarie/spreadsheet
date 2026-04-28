@@ -16,6 +16,7 @@ export function SignInForm() {
           name="email"
           type="email"
           required
+          data-testid="sign-in-email"
           className="mt-2 w-full rounded-md border border-border bg-white px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-blue-100"
         />
       </label>
@@ -25,6 +26,7 @@ export function SignInForm() {
           name="password"
           type="password"
           required
+          data-testid="sign-in-password"
           className="mt-2 w-full rounded-md border border-border bg-white px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-blue-100"
         />
       </label>
@@ -32,6 +34,7 @@ export function SignInForm() {
       <button
         type="submit"
         disabled={pending}
+        data-testid="sign-in-submit"
         className="w-full rounded-md bg-ink px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {pending ? "Signing in..." : "Sign in"}

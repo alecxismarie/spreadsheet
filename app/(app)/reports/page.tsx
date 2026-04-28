@@ -3,8 +3,8 @@ import { ImportPanel } from "@/components/reports/import-panel";
 import { ReportsGrid } from "@/components/reports/reports-grid";
 import { canViewWorkspaceReports } from "@/lib/auth/permissions";
 import { parseFilters } from "@/lib/domain/filters";
-import { requireSession } from "@/lib/auth/session";
-import { getPeriods, getReportsForWorkspace, getWorkspaceMembers } from "@/lib/services/reporting";
+import { requireCurrentSession } from "@/lib/auth/session";
+import { getAccessibleWorkspaceMembers, getPeriods, getReportsForWorkspace } from "@/lib/services/reporting";
 import { prisma } from "@/lib/prisma";
 
 export default async function ReportsPage({
@@ -12,18 +12,24 @@ export default async function ReportsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const session = await requireSession();
+  const session = await requireCurrentSession();
   const filters = parseFilters(await searchParams);
+  const canManageAll = canViewWorkspaceReports(session.role);
+  const exportParams = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value) exportParams.set(key, value);
+  });
+  const exportHref = `/reports/export${exportParams.size ? `?${exportParams.toString()}` : ""}`;
   const [reports, periods, members] = await Promise.all([
     getReportsForWorkspace(session, filters),
     getPeriods(session.workspaceId),
-    getWorkspaceMembers(session.workspaceId)
+    getAccessibleWorkspaceMembers(session)
   ]);
   const auditActorIds = [...new Set(reports.flatMap((report) => report.auditLogs.map((log) => log.actorId)))];
   const auditActors = auditActorIds.length
     ? await prisma.user.findMany({
         where: { id: { in: auditActorIds } },
-        select: { id: true, name: true, email: true }
+        select: { id: true, name: true }
       })
     : [];
   const auditActorById = new Map(auditActors.map((actor) => [actor.id, actor]));
@@ -63,7 +69,7 @@ export default async function ReportsPage({
         action: log.action,
         message: log.message,
         createdAt: log.createdAt.toISOString(),
-        actor: actor ? { name: actor.name, email: actor.email } : null
+        actor: actor ? { name: actor.name } : null
       };
     })
   }));
@@ -85,9 +91,18 @@ export default async function ReportsPage({
 
   return (
     <div className="space-y-6">
-      <div>
-        <p className="text-sm font-medium uppercase tracking-[0.18em] text-muted">Reports</p>
-        <h1 className="mt-2 text-2xl font-semibold text-ink">Spreadsheet reporting workspace</h1>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium uppercase tracking-[0.18em] text-muted">Reports</p>
+          <h1 className="mt-2 text-2xl font-semibold text-ink">Spreadsheet reporting workspace</h1>
+        </div>
+        <a
+          href={exportHref}
+          data-testid="export-csv"
+          className="rounded-md border border-border bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          Export CSV
+        </a>
       </div>
 
       <FilterBar
@@ -95,14 +110,14 @@ export default async function ReportsPage({
         periods={periods}
         defaults={filters}
         resetHref="/reports"
-        showMemberFilter={canViewWorkspaceReports(session.role)}
+        showMemberFilter={canManageAll}
       />
 
       <ImportPanel
         members={memberDtos}
         periods={periodDtos}
         session={session}
-        canManageAll={canViewWorkspaceReports(session.role)}
+        canManageAll={canManageAll}
       />
 
       <ReportsGrid
@@ -110,7 +125,7 @@ export default async function ReportsPage({
         periods={periodDtos}
         members={memberDtos}
         session={session}
-        canManageAll={canViewWorkspaceReports(session.role)}
+        canManageAll={canManageAll}
       />
     </div>
   );

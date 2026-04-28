@@ -122,6 +122,16 @@ async function main() {
 
   for (const seed of reportSeeds) {
     const member = members.find((candidate) => candidate.email === seed.email)!;
+    const existingSeedReport = await prisma.salesReport.findFirst({
+      where: {
+        workspaceId: workspace.id,
+        memberId: member.id,
+        periodId: monthlyPeriod.id,
+        rows: { some: { customer: seed.rows[0][0] } }
+      }
+    });
+    if (existingSeedReport) continue;
+
     const report = await prisma.salesReport.create({
       data: {
         workspaceId: workspace.id,

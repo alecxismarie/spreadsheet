@@ -52,6 +52,7 @@ export function ImportPanel({
         <button
           type="button"
           onClick={() => setOpen((current) => !current)}
+          data-testid="import-toggle"
           className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
         >
           <FileUp className="h-4 w-4" />
@@ -125,10 +126,12 @@ function ImportPanelBody({
               name="file"
               type="file"
               accept=".csv,.xlsx"
+              data-testid="import-file"
               className="rounded-md border border-border px-3 py-2 text-sm"
             />
             <button
               disabled={previewPending}
+              data-testid="import-preview"
               className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
             >
               {previewPending ? "Parsing..." : "Preview file"}
@@ -150,6 +153,7 @@ function ImportPanelBody({
                   value={memberId}
                   disabled={!canManageAll}
                   onChange={(event) => setMemberId(event.target.value)}
+                  data-testid="import-member-select"
                   className="rounded-md border border-border px-3 py-2 text-sm disabled:bg-slate-50"
                 >
                   {members.map((member) => (
@@ -163,6 +167,7 @@ function ImportPanelBody({
                   name="periodId"
                   value={periodId}
                   onChange={(event) => setPeriodId(event.target.value)}
+                  data-testid="import-period-select"
                   className="rounded-md border border-border px-3 py-2 text-sm"
                 >
                   {periods.map((period) => (
@@ -176,16 +181,17 @@ function ImportPanelBody({
                   type="date"
                   value={reportDate}
                   onChange={(event) => setReportDate(event.target.value)}
+                  data-testid="import-date-input"
                   className="rounded-md border border-border px-3 py-2 text-sm"
                 />
               </div>
 
               <div className="grid gap-3 md:grid-cols-5">
-                <MappingSelect label="Customer" name="customer" required value={resolvedMapping.customer} columns={previewState.columns} onChange={(value) => setMapping((current) => ({ ...current, customer: value }))} />
-                <MappingSelect label="Product" name="product" required value={resolvedMapping.product} columns={previewState.columns} onChange={(value) => setMapping((current) => ({ ...current, product: value }))} />
-                <MappingSelect label="Sales amount" name="salesAmount" required value={resolvedMapping.salesAmount} columns={previewState.columns} onChange={(value) => setMapping((current) => ({ ...current, salesAmount: value }))} />
-                <MappingSelect label="Units sold" name="unitsSold" required value={resolvedMapping.unitsSold} columns={previewState.columns} onChange={(value) => setMapping((current) => ({ ...current, unitsSold: value }))} />
-                <MappingSelect label="Notes" name="notes" value={resolvedMapping.notes} columns={previewState.columns} onChange={(value) => setMapping((current) => ({ ...current, notes: value }))} />
+                <MappingSelect label="Customer" name="customer" required value={resolvedMapping.customer} columns={previewState.columns} testId="import-map-customer" onChange={(value) => setMapping((current) => ({ ...current, customer: value }))} />
+                <MappingSelect label="Product" name="product" required value={resolvedMapping.product} columns={previewState.columns} testId="import-map-product" onChange={(value) => setMapping((current) => ({ ...current, product: value }))} />
+                <MappingSelect label="Sales amount" name="salesAmount" required value={resolvedMapping.salesAmount} columns={previewState.columns} testId="import-map-sales" onChange={(value) => setMapping((current) => ({ ...current, salesAmount: value }))} />
+                <MappingSelect label="Units sold" name="unitsSold" required value={resolvedMapping.unitsSold} columns={previewState.columns} testId="import-map-units" onChange={(value) => setMapping((current) => ({ ...current, unitsSold: value }))} />
+                <MappingSelect label="Notes" name="notes" value={resolvedMapping.notes} columns={previewState.columns} testId="import-map-notes" onChange={(value) => setMapping((current) => ({ ...current, notes: value }))} />
               </div>
 
               <div className="rounded-md bg-slate-50 p-3 text-sm text-muted">
@@ -235,6 +241,7 @@ function ImportPanelBody({
               <div className="flex flex-wrap items-center gap-3">
                 <button
                   disabled={!requiredMappingsComplete || importPending}
+                  data-testid="import-submit"
                   className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                 >
                   {importPending ? "Importing..." : "Import as draft"}
@@ -259,6 +266,7 @@ function MappingSelect({
   value,
   columns,
   required = false,
+  testId,
   onChange
 }: {
   label: string;
@@ -266,6 +274,7 @@ function MappingSelect({
   value: string;
   columns: string[];
   required?: boolean;
+  testId?: string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -275,6 +284,7 @@ function MappingSelect({
         name={name}
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        data-testid={testId}
         className="mt-2 w-full rounded-md border border-border px-3 py-2 text-sm"
       >
         <option value="">Do not import</option>

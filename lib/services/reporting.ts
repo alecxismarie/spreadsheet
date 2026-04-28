@@ -2,9 +2,26 @@ import { Prisma, ReportAuditAction, ReportingPeriodType, SubmissionStatus } from
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { canAccessMember, canReviewReports, canViewWorkspaceReports } from "@/lib/auth/permissions";
-import type { AppSession } from "@/lib/auth/session";
+import { refreshSession, type AppSession } from "@/lib/auth/session";
 import { endOfDateFilter, startOfDateFilter } from "@/lib/domain/date-range";
 import { prisma } from "@/lib/prisma";
+
+const membershipListSelect = {
+  id: true,
+  userId: true,
+  workspaceId: true,
+  role: true,
+  active: true,
+  createdAt: true,
+  updatedAt: true,
+  user: {
+    select: {
+      id: true,
+      name: true,
+      email: true
+    }
+  }
+} satisfies Prisma.MembershipSelect;
 
 export const rowInputSchema = z.object({
   id: z.string().optional(),
@@ -41,7 +58,22 @@ export async function getPeriods(workspaceId: string) {
 export async function getWorkspaceMembers(workspaceId: string) {
   return prisma.membership.findMany({
     where: { workspaceId, active: true },
-    include: { user: true },
+    select: membershipListSelect,
+    orderBy: [{ role: "asc" }, { user: { name: "asc" } }]
+  });
+}
+
+export async function getAccessibleWorkspaceMembers(session: AppSession) {
+  const currentSession = await refreshSession(session);
+  if (!currentSession) return [];
+
+  return prisma.membership.findMany({
+    where: {
+      workspaceId: currentSession.workspaceId,
+      active: true,
+      ...(canViewWorkspaceReports(currentSession.role) ? {} : { userId: currentSession.userId })
+    },
+    select: membershipListSelect,
     orderBy: [{ role: "asc" }, { user: { name: "asc" } }]
   });
 }
@@ -57,6 +89,10 @@ export async function getReportsForWorkspace(
     to?: string;
   }
 ) {
+  const currentSession = await refreshSession(session);
+  if (!currentSession) return [];
+  session = currentSession;
+
   const memberId = canViewWorkspaceReports(session.role) ? filters.memberId : session.userId;
   const from = startOfDateFilter(filters.from);
   const to = endOfDateFilter(filters.to);
@@ -79,7 +115,7 @@ export async function getReportsForWorkspace(
   return prisma.salesReport.findMany({
     where,
     include: {
-      member: true,
+      member: { select: { id: true, name: true, email: true } },
       period: true,
       rows: { orderBy: { rowOrder: "asc" } },
       auditLogs: { orderBy: { createdAt: "desc" } }
@@ -89,6 +125,12 @@ export async function getReportsForWorkspace(
 }
 
 export async function saveReport(session: AppSession, input: unknown): Promise<ReportSaveResult> {
+  const currentSession = await refreshSession(session);
+  if (!currentSession) {
+    return { ok: false, message: "Your session is no longer active. Sign in again." };
+  }
+  session = currentSession;
+
   const parsed = reportInputSchema.safeParse(input);
   if (!parsed.success) {
     return {
@@ -246,6 +288,12 @@ export async function updateReportStatus(
   status: SubmissionStatus,
   message?: string
 ) {
+  const currentSession = await refreshSession(session);
+  if (!currentSession) {
+    return { ok: false, message: "Your session is no longer active. Sign in again." };
+  }
+  session = currentSession;
+
   if (!canReviewReports(session.role)) {
     return { ok: false, message: "You do not have permission to review reports." };
   }

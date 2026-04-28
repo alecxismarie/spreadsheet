@@ -42,7 +42,10 @@ export function AppShell({ context, children }: { context: Context; children: Re
               <p className="text-xs text-muted">{context.membership.role}</p>
             </div>
             <form action={signOutAction}>
-              <button className="rounded-md border border-border bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+              <button
+                data-testid="sign-out"
+                className="rounded-md border border-border bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
                 Sign out
               </button>
             </form>

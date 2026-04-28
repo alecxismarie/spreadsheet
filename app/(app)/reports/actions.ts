@@ -1,7 +1,7 @@
 "use server";
 
 import { SubmissionStatus } from "@prisma/client";
-import { requireSession } from "@/lib/auth/session";
+import { requireCurrentSession } from "@/lib/auth/session";
 import {
   importRowsAsDraft,
   previewImportFile,
@@ -16,7 +16,7 @@ export async function saveReportAction(
   _state: ReportSaveResult,
   formData: FormData
 ): Promise<ReportSaveResult> {
-  const session = await requireSession();
+  const session = await requireCurrentSession();
   const rowsRaw = formData.get("rows");
   let rows: unknown[] = [];
   try {
@@ -44,7 +44,7 @@ export async function reviewReportAction(
   _state: ReviewReportState,
   formData: FormData
 ): Promise<ReviewReportState> {
-  const session = await requireSession();
+  const session = await requireCurrentSession();
   const reportId = String(formData.get("reportId"));
   const status = String(formData.get("status")) as SubmissionStatus;
   const reviewNote = String(formData.get("reviewNote") ?? "");
@@ -55,7 +55,7 @@ export async function previewImportAction(
   _state: ImportPreviewState,
   formData: FormData
 ): Promise<ImportPreviewState> {
-  await requireSession();
+  await requireCurrentSession();
   const file = formData.get("file");
   return previewImportFile(file instanceof File ? file : null);
 }
@@ -64,7 +64,7 @@ export async function importRowsAction(
   _state: ImportRowsState,
   formData: FormData
 ): Promise<ImportRowsState> {
-  const session = await requireSession();
+  const session = await requireCurrentSession();
   let rows: unknown[] = [];
   try {
     rows = JSON.parse(String(formData.get("rows") ?? "[]"));
@@ -92,7 +92,7 @@ export async function removeImportBatchAction(
   _state: RemoveImportBatchState,
   formData: FormData
 ): Promise<RemoveImportBatchState> {
-  const session = await requireSession();
+  const session = await requireCurrentSession();
   return removeImportedBatch(session, {
     reportId: formData.get("reportId"),
     importBatchId: formData.get("importBatchId")

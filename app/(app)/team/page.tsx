@@ -5,24 +5,23 @@ import { StatusBadge } from "@/components/app/status-badge";
 import { currency } from "@/lib/domain/format";
 import { parseFilters } from "@/lib/domain/filters";
 import { canViewWorkspaceReports } from "@/lib/auth/permissions";
-import { requireSession } from "@/lib/auth/session";
-import { getPeriods, getReportsForWorkspace, getWorkspaceMembers } from "@/lib/services/reporting";
+import { requireCurrentSession } from "@/lib/auth/session";
+import { getAccessibleWorkspaceMembers, getPeriods, getReportsForWorkspace } from "@/lib/services/reporting";
 
 export default async function TeamPage({
   searchParams
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const session = await requireSession();
+  const session = await requireCurrentSession();
   const filters = parseFilters(await searchParams);
+  const canManageAll = canViewWorkspaceReports(session.role);
   const [memberships, periods, reports] = await Promise.all([
-    getWorkspaceMembers(session.workspaceId),
+    getAccessibleWorkspaceMembers(session),
     getPeriods(session.workspaceId),
     getReportsForWorkspace(session, filters)
   ]);
-  const visibleMemberships = canViewWorkspaceReports(session.role)
-    ? memberships
-    : memberships.filter((membership) => membership.userId === session.userId);
+  const visibleMemberships = memberships;
 
   return (
     <div className="space-y-6">
@@ -36,12 +35,12 @@ export default async function TeamPage({
         periods={periods}
         defaults={filters}
         resetHref="/team"
-        showMemberFilter={canViewWorkspaceReports(session.role)}
+        showMemberFilter={canManageAll}
       />
 
       <section className="rounded-lg border border-border bg-white shadow-subtle">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[940px] text-left text-sm">
+          <table className="w-full min-w-[1040px] text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase tracking-wide text-muted">
               <tr>
                 <th className="px-5 py-3">Member</th>
@@ -50,7 +49,8 @@ export default async function TeamPage({
                 <th className="px-5 py-3">Submitted</th>
                 <th className="px-5 py-3">Draft</th>
                 <th className="px-5 py-3">Needs review</th>
-                <th className="px-5 py-3">Total sales in filter</th>
+                <th className="px-5 py-3">Official sales in filter</th>
+                <th className="px-5 py-3">Pending sales in filter</th>
                 <th className="px-5 py-3">Recent report</th>
                 <th className="px-5 py-3"></th>
               </tr>
@@ -58,7 +58,13 @@ export default async function TeamPage({
             <tbody className="divide-y divide-border">
               {visibleMemberships.map((membership) => {
                 const memberReports = reports.filter((report) => report.memberId === membership.userId);
-                const sales = memberReports.reduce(
+                const officialReports = memberReports.filter((report) => report.status === "SUBMITTED" || report.status === "APPROVED");
+                const pendingReports = memberReports.filter((report) => report.status === "DRAFT" || report.status === "NEEDS_REVIEW");
+                const officialSales = officialReports.reduce(
+                  (sum, report) => sum + report.rows.reduce((rowSum, row) => rowSum + Number(row.salesAmount), 0),
+                  0
+                );
+                const pendingSales = pendingReports.reduce(
                   (sum, report) => sum + report.rows.reduce((rowSum, row) => rowSum + Number(row.salesAmount), 0),
                   0
                 );
@@ -80,7 +86,8 @@ export default async function TeamPage({
                     <td className="px-5 py-3">{submitted}</td>
                     <td className="px-5 py-3">{drafts}</td>
                     <td className="px-5 py-3">{needsReview}</td>
-                    <td className="px-5 py-3">{currency(sales)}</td>
+                    <td className="px-5 py-3">{currency(officialSales)}</td>
+                    <td className="px-5 py-3">{currency(pendingSales)}</td>
                     <td className="px-5 py-3">{latest ? <StatusBadge status={latest.status} /> : <span className="text-muted">No reports</span>}</td>
                     <td className="px-5 py-3 text-right">
                       <Link href={`/reports?memberId=${membership.userId}`} className="font-semibold text-accent hover:underline">

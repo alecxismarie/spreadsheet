@@ -3,20 +3,21 @@ import { StatusBadge } from "@/components/app/status-badge";
 import { currency, percent } from "@/lib/domain/format";
 import { parseFilters } from "@/lib/domain/filters";
 import { canViewWorkspaceReports } from "@/lib/auth/permissions";
-import { requireSession } from "@/lib/auth/session";
+import { requireCurrentSession } from "@/lib/auth/session";
 import { getOverview } from "@/lib/services/overview";
-import { getPeriods, getWorkspaceMembers } from "@/lib/services/reporting";
+import { getAccessibleWorkspaceMembers, getPeriods } from "@/lib/services/reporting";
 
 export default async function OverviewPage({
   searchParams
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const session = await requireSession();
+  const session = await requireCurrentSession();
   const filters = parseFilters(await searchParams);
+  const canManageAll = canViewWorkspaceReports(session.role);
   const [overview, members, periods] = await Promise.all([
     getOverview(session, filters),
-    getWorkspaceMembers(session.workspaceId),
+    getAccessibleWorkspaceMembers(session),
     getPeriods(session.workspaceId)
   ]);
 
@@ -32,12 +33,13 @@ export default async function OverviewPage({
         periods={periods}
         defaults={filters}
         resetHref="/overview"
-        showMemberFilter={canViewWorkspaceReports(session.role)}
+        showMemberFilter={canManageAll}
       />
 
-      <section className="grid gap-4 md:grid-cols-5">
-        <Kpi label="Total sales" value={currency(overview.totalSales)} />
-        <Kpi label="Total units" value={overview.totalUnits.toLocaleString()} />
+      <section className="grid gap-4 md:grid-cols-6">
+        <Kpi label="Official sales" value={currency(overview.totalSales)} />
+        <Kpi label="Official units" value={overview.totalUnits.toLocaleString()} />
+        <Kpi label="Pending sales" value={currency(overview.pendingSales)} />
         <Kpi label="Target progress" value={percent(overview.targetProgress)} tone={overview.targetVariance >= 0 ? "good" : "risk"} />
         <Kpi label="Submission health" value={percent(overview.submissionHealth)} />
         <Kpi label="Needs review" value={overview.reportsNeedingReview.toLocaleString()} tone={overview.reportsNeedingReview ? "risk" : "good"} />
@@ -46,17 +48,18 @@ export default async function OverviewPage({
       <section className="grid gap-6 xl:grid-cols-[1.4fr_0.8fr]">
         <div className="rounded-lg border border-border bg-white shadow-subtle">
           <div className="border-b border-border px-5 py-4">
-            <h2 className="font-semibold text-ink">Team performance</h2>
+            <h2 className="font-semibold text-ink">Official team performance</h2>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-left text-sm">
+            <table className="w-full min-w-[860px] text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-muted">
                 <tr>
                   <th className="px-5 py-3">Member</th>
-                  <th className="px-5 py-3">Sales</th>
-                  <th className="px-5 py-3">Units</th>
+                  <th className="px-5 py-3">Official sales</th>
+                  <th className="px-5 py-3">Official units</th>
                   <th className="px-5 py-3">Target</th>
                   <th className="px-5 py-3">Variance</th>
+                  <th className="px-5 py-3">Pending sales</th>
                   <th className="px-5 py-3">Drafts</th>
                 </tr>
               </thead>
@@ -70,6 +73,7 @@ export default async function OverviewPage({
                     <td className={member.variance >= 0 ? "px-5 py-3 text-success" : "px-5 py-3 text-danger"}>
                       {currency(member.variance)}
                     </td>
+                    <td className="px-5 py-3">{currency(member.pendingSales)}</td>
                     <td className="px-5 py-3">{member.draftReports}</td>
                   </tr>
                 ))}

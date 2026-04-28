@@ -41,7 +41,7 @@ type Report = {
     action: ReportAuditAction;
     message: string | null;
     createdAt: string;
-    actor: { name: string; email: string } | null;
+    actor: { name: string } | null;
   }>;
 };
 
@@ -175,6 +175,7 @@ export function ReportsGrid({
           <button
             type="button"
             onClick={() => selectReport("new")}
+            data-testid="report-new"
             className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
           >
             <Plus className="h-3.5 w-3.5" />
@@ -190,6 +191,7 @@ export function ReportsGrid({
                 key={report.id}
                 type="button"
                 onClick={() => selectReport(report.id)}
+                data-testid={`report-list-item-${report.id}`}
                 className={`block w-full px-4 py-3 text-left hover:bg-slate-50 ${selectedReportId === report.id ? "bg-slate-50" : ""}`}
               >
                 <div className="flex items-center justify-between gap-2">
@@ -216,6 +218,7 @@ export function ReportsGrid({
             value={memberId}
             onChange={(event) => setMemberId(event.target.value)}
             disabled={!canManageAll}
+            data-testid="report-member-select"
             className="rounded-md border border-border px-3 py-2 text-sm disabled:bg-slate-50"
           >
             {members.map((membership) => (
@@ -224,14 +227,27 @@ export function ReportsGrid({
               </option>
             ))}
           </select>
-          <select name="periodId" value={periodId} onChange={(event) => setPeriodId(event.target.value)} className="rounded-md border border-border px-3 py-2 text-sm">
+          <select
+            name="periodId"
+            value={periodId}
+            onChange={(event) => setPeriodId(event.target.value)}
+            data-testid="report-period-select"
+            className="rounded-md border border-border px-3 py-2 text-sm"
+          >
             {periods.map((period) => (
               <option key={period.id} value={period.id}>
                 {period.label} ({period.type})
               </option>
             ))}
           </select>
-          <input name="reportDate" type="date" value={reportDate} onChange={(event) => setReportDate(event.target.value)} className="rounded-md border border-border px-3 py-2 text-sm" />
+          <input
+            name="reportDate"
+            type="date"
+            value={reportDate}
+            onChange={(event) => setReportDate(event.target.value)}
+            data-testid="report-date-input"
+            className="rounded-md border border-border px-3 py-2 text-sm"
+          />
           <div className="flex items-center justify-end gap-2 text-sm">
             <span className="text-muted">Total</span>
             <strong>{currency(totals.sales)}</strong>
@@ -258,8 +274,8 @@ export function ReportsGrid({
               {rows.map((row, index) => (
                 <tr key={`${row.id ?? "new"}-${index}`}>
                   <td className="px-3 py-2 text-muted">{index + 1}</td>
-                  <Cell value={row.customer} disabled={!editable} onChange={(value) => updateRow(index, { customer: value })} />
-                  <Cell value={row.product} disabled={!editable} onChange={(value) => updateRow(index, { product: value })} />
+                  <Cell value={row.customer} disabled={!editable} testId={`report-row-customer-${index}`} onChange={(value) => updateRow(index, { customer: value })} />
+                  <Cell value={row.product} disabled={!editable} testId={`report-row-product-${index}`} onChange={(value) => updateRow(index, { product: value })} />
                   <td className="px-3 py-2">
                     <input
                       type="number"
@@ -268,6 +284,7 @@ export function ReportsGrid({
                       value={row.salesAmount}
                       disabled={!editable}
                       onChange={(event) => updateRow(index, { salesAmount: Number(event.target.value) })}
+                      data-testid={`report-row-sales-${index}`}
                       className="w-full rounded border border-transparent bg-transparent px-2 py-1.5 outline-none focus:border-accent focus:bg-white"
                     />
                   </td>
@@ -279,10 +296,11 @@ export function ReportsGrid({
                       value={row.unitsSold}
                       disabled={!editable}
                       onChange={(event) => updateRow(index, { unitsSold: Number(event.target.value) })}
+                      data-testid={`report-row-units-${index}`}
                       className="w-full rounded border border-transparent bg-transparent px-2 py-1.5 outline-none focus:border-accent focus:bg-white"
                     />
                   </td>
-                  <Cell value={row.notes ?? ""} disabled={!editable} onChange={(value) => updateRow(index, { notes: value })} />
+                  <Cell value={row.notes ?? ""} disabled={!editable} testId={`report-row-notes-${index}`} onChange={(value) => updateRow(index, { notes: value })} />
                   <td className="px-3 py-2">
                     <button
                       type="button"
@@ -305,6 +323,7 @@ export function ReportsGrid({
             type="button"
             disabled={!editable}
             onClick={() => setRows((current) => [...current, emptyRow(current.length)])}
+            data-testid="report-add-row"
             className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             <Plus className="h-4 w-4" />
@@ -316,6 +335,7 @@ export function ReportsGrid({
               type="submit"
               disabled={!editable || pending}
               onClick={() => setIntent("SAVE_DRAFT")}
+              data-testid="report-save-draft"
               className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
               <Save className="h-4 w-4" />
@@ -325,6 +345,7 @@ export function ReportsGrid({
               type="submit"
               disabled={!editable || pending}
               onClick={() => setIntent("SUBMIT")}
+              data-testid="report-submit"
               className="inline-flex items-center gap-2 rounded-md bg-ink px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
             >
               <Send className="h-4 w-4" />
@@ -379,6 +400,7 @@ export function ReportsGrid({
               <input
                 name="reviewNote"
                 placeholder="Optional note for the member"
+                data-testid="review-note"
                 className="mt-2 w-full rounded-md border border-border px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-blue-100"
               />
             </label>
@@ -388,6 +410,7 @@ export function ReportsGrid({
                 name="status"
                 value="APPROVED"
                 disabled={reviewPending}
+                data-testid="review-approve"
                 className="rounded-md bg-success px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
               >
                 Approve
@@ -397,6 +420,7 @@ export function ReportsGrid({
                 name="status"
                 value="NEEDS_REVIEW"
                 disabled={reviewPending}
+                data-testid="review-needs-review"
                 className="rounded-md border border-border px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 Mark needs review
@@ -456,7 +480,7 @@ function ActivityLog({ auditLogs }: { auditLogs: Report["auditLogs"] }) {
                 <p className="text-xs text-muted">{new Date(log.createdAt).toLocaleString()}</p>
               </div>
               <div>
-                <p className="text-slate-700">{log.actor ? `${log.actor.name} (${log.actor.email})` : "Unknown actor"}</p>
+                <p className="text-slate-700">{log.actor ? log.actor.name : "Unknown actor"}</p>
                 {log.message ? <p className="mt-1 text-muted">{log.message}</p> : null}
               </div>
             </div>
@@ -484,10 +508,12 @@ function formatAuditAction(action: ReportAuditAction) {
 function Cell({
   value,
   disabled,
+  testId,
   onChange
 }: {
   value: string;
   disabled: boolean;
+  testId?: string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -496,6 +522,7 @@ function Cell({
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
+        data-testid={testId}
         className="w-full rounded border border-transparent bg-transparent px-2 py-1.5 outline-none focus:border-accent focus:bg-white disabled:text-slate-600"
       />
     </td>
