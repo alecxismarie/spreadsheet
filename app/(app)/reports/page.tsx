@@ -25,14 +25,21 @@ export default async function ReportsPage({
     getPeriods(session.workspaceId),
     getAccessibleWorkspaceMembers(session)
   ]);
-  const auditActorIds = [...new Set(reports.flatMap((report) => report.auditLogs.map((log) => log.actorId)))];
-  const auditActors = auditActorIds.length
+  const actorIds = [
+    ...new Set(
+      reports.flatMap((report) => [
+        ...report.auditLogs.map((log) => log.actorId),
+        ...report.reviewComments.map((comment) => comment.authorId)
+      ])
+    )
+  ];
+  const actors = actorIds.length
     ? await prisma.user.findMany({
-        where: { id: { in: auditActorIds } },
+        where: { id: { in: actorIds } },
         select: { id: true, name: true }
       })
     : [];
-  const auditActorById = new Map(auditActors.map((actor) => [actor.id, actor]));
+  const actorById = new Map(actors.map((actor) => [actor.id, actor]));
   const reportDtos = reports.map((report) => ({
     id: report.id,
     memberId: report.memberId,
@@ -63,13 +70,23 @@ export default async function ReportsPage({
       importFilename: row.importFilename
     })),
     auditLogs: report.auditLogs.map((log) => {
-      const actor = auditActorById.get(log.actorId);
+      const actor = actorById.get(log.actorId);
       return {
         id: log.id,
         action: log.action,
         message: log.message,
         createdAt: log.createdAt.toISOString(),
         actor: actor ? { name: actor.name } : null
+      };
+    }),
+    reviewComments: report.reviewComments.map((comment) => {
+      const author = actorById.get(comment.authorId);
+      return {
+        id: comment.id,
+        body: comment.body,
+        statusContext: comment.statusContext,
+        createdAt: comment.createdAt.toISOString(),
+        author: author ? { name: author.name } : null
       };
     })
   }));

@@ -68,13 +68,13 @@ export function summarizePerformance(reports: ReportWithRows[], targets: Target[
     const sales = report.rows.reduce((sum, row) => sum + Number(row.salesAmount), 0);
     const units = report.rows.reduce((sum, row) => sum + row.unitsSold, 0);
 
-    if (report.status === "SUBMITTED" || report.status === "APPROVED") {
+    if (report.status === "APPROVED") {
       existing.totalSales += sales;
       existing.totalUnits += units;
-      existing.submittedReports += 1;
-    } else {
+    } else if (report.status === "SUBMITTED") {
       existing.pendingSales += sales;
       existing.pendingUnits += units;
+      existing.submittedReports += 1;
     }
 
     existing.draftReports += report.status === "DRAFT" ? 1 : 0;
@@ -88,7 +88,8 @@ export function summarizePerformance(reports: ReportWithRows[], targets: Target[
 
 export function deriveInsights(performance: MemberPerformance[]) {
   const insights: string[] = [];
-  const top = performance[0];
+  const top = performance.find((member) => member.totalSales > 0);
+  const pendingReview = performance.reduce((sum, member) => sum + member.submittedReports, 0);
   const draftCount = performance.reduce((sum, member) => sum + member.draftReports, 0);
   const belowTarget = performance.filter((member) => member.target > 0 && member.variance < 0);
   const needsReview = performance.reduce((sum, member) => sum + member.needsReviewReports, 0);
@@ -96,14 +97,17 @@ export function deriveInsights(performance: MemberPerformance[]) {
   if (top) {
     insights.push(`${top.name} leads official sales in the selected period.`);
   }
+  if (pendingReview > 0) {
+    insights.push(`${pendingReview} report${pendingReview === 1 ? "" : "s"} ${pendingReview === 1 ? "is" : "are"} pending manager review.`);
+  }
   if (draftCount > 0) {
-    insights.push(`${draftCount} report${draftCount === 1 ? "" : "s"} remain in draft.`);
+    insights.push(`${draftCount} report${draftCount === 1 ? "" : "s"} ${draftCount === 1 ? "remains" : "remain"} in draft.`);
   }
   if (belowTarget.length > 0) {
     insights.push(`${belowTarget.length} member${belowTarget.length === 1 ? "" : "s"} are below target.`);
   }
   if (needsReview > 0) {
-    insights.push(`${needsReview} report${needsReview === 1 ? "" : "s"} need manager review.`);
+    insights.push(`${needsReview} report${needsReview === 1 ? "" : "s"} ${needsReview === 1 ? "needs" : "need"} member revision.`);
   }
   if (insights.length === 0) {
     insights.push("No attention items detected for the selected period.");

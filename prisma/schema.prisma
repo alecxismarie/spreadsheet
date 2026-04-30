@@ -38,6 +38,20 @@ enum ReportAuditAction {
   NEEDS_REVIEW
 }
 
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum TeamAuditAction {
+  INVITE_CREATED
+  ROLE_CHANGED
+  MEMBER_DEACTIVATED
+  MEMBER_REACTIVATED
+}
+
 model User {
   id           String        @id @default(cuid())
   name         String
@@ -60,6 +74,10 @@ model Workspace {
   reports     SalesReport[]
   targets     SalesTarget[]
   auditLogs   ReportAuditLog[]
+  exportAuditLogs WorkspaceExportAuditLog[]
+  invitations WorkspaceInvitation[]
+  reviewComments ReportReviewComment[]
+  teamAuditLogs TeamAuditLog[]
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
 }
@@ -94,6 +112,56 @@ model Membership {
   @@index([workspaceId, role])
 }
 
+model WorkspaceInvitation {
+  id          String           @id @default(cuid())
+  workspaceId String
+  email       String
+  role        Role             @default(MEMBER)
+  tokenHash   String           @unique
+  status      InvitationStatus @default(PENDING)
+  invitedById String
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, email])
+  @@index([invitedById])
+}
+
+model TeamAuditLog {
+  id           String          @id @default(cuid())
+  workspaceId  String
+  actorId      String
+  action       TeamAuditAction
+  targetUserId String?
+  targetEmail  String?
+  message      String?         @db.Text
+  createdAt    DateTime        @default(now())
+  workspace    Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([actorId])
+  @@index([targetUserId])
+}
+
+model WorkspaceExportAuditLog {
+  id          String    @id @default(cuid())
+  workspaceId String
+  actorId     String
+  format      String
+  filtersJson String    @db.Text
+  reportCount Int
+  rowCount    Int
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([actorId])
+}
+
 model ReportingPeriod {
   id          String              @id @default(cuid())
   workspaceId String
@@ -123,6 +191,7 @@ model SalesReport {
   notes       String?          @db.Text
   rows        SalesReportRow[]
   auditLogs   ReportAuditLog[]
+  reviewComments ReportReviewComment[]
   workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   member      User             @relation("ReportOwner", fields: [memberId], references: [id], onDelete: Cascade)
   period      ReportingPeriod  @relation(fields: [periodId], references: [id], onDelete: Restrict)
@@ -148,6 +217,22 @@ model ReportAuditLog {
   @@index([workspaceId, createdAt])
   @@index([reportId, createdAt])
   @@index([actorId])
+}
+
+model ReportReviewComment {
+  id            String           @id @default(cuid())
+  workspaceId   String
+  reportId      String
+  authorId      String
+  statusContext SubmissionStatus
+  body          String           @db.Text
+  createdAt     DateTime         @default(now())
+  workspace     Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  report        SalesReport      @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([reportId, createdAt])
+  @@index([authorId])
 }
 
 model SalesReportRow {

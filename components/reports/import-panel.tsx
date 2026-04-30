@@ -221,7 +221,7 @@ function ImportPanelBody({
 
               {importState.summary ? (
                 <div className="rounded-md bg-slate-50 p-3 text-sm text-muted">
-                  Valid rows: {importState.summary.validRows}. Invalid rows: {importState.summary.invalidRows}. Ignored empty rows: {importState.summary.ignoredEmptyRows}.
+                  Valid rows: {importState.summary.validRows}. Imported rows: {importState.summary.importedRows}. Skipped duplicates: {importState.summary.skippedDuplicates}. Invalid rows: {importState.summary.invalidRows}. Ignored empty rows: {importState.summary.ignoredEmptyRows}.
                 </div>
               ) : null}
               {importState.rowErrors?.length ? (

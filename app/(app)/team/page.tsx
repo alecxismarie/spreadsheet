@@ -2,11 +2,13 @@ import Link from "next/link";
 import { Role } from "@prisma/client";
 import { FilterBar } from "@/components/app/filter-bar";
 import { StatusBadge } from "@/components/app/status-badge";
+import { TeamManagementPanel } from "@/components/team/team-management-panel";
 import { currency } from "@/lib/domain/format";
 import { parseFilters } from "@/lib/domain/filters";
-import { canViewWorkspaceReports } from "@/lib/auth/permissions";
+import { canManageWorkspace, canViewWorkspaceReports } from "@/lib/auth/permissions";
 import { requireCurrentSession } from "@/lib/auth/session";
 import { getAccessibleWorkspaceMembers, getPeriods, getReportsForWorkspace } from "@/lib/services/reporting";
+import { getTeamManagementData } from "@/lib/services/team";
 
 export default async function TeamPage({
   searchParams
@@ -16,12 +18,14 @@ export default async function TeamPage({
   const session = await requireCurrentSession();
   const filters = parseFilters(await searchParams);
   const canManageAll = canViewWorkspaceReports(session.role);
-  const [memberships, periods, reports] = await Promise.all([
+  const canManageTeam = canManageWorkspace(session.role);
+  const [memberships, periods, reports, teamManagement] = await Promise.all([
     getAccessibleWorkspaceMembers(session),
     getPeriods(session.workspaceId),
-    getReportsForWorkspace(session, filters)
+    getReportsForWorkspace(session, filters),
+    getTeamManagementData(session)
   ]);
-  const visibleMemberships = memberships;
+  const visibleMemberships = canManageTeam ? teamManagement.memberships : memberships;
 
   return (
     <div className="space-y-6">
@@ -50,7 +54,7 @@ export default async function TeamPage({
                 <th className="px-5 py-3">Draft</th>
                 <th className="px-5 py-3">Needs review</th>
                 <th className="px-5 py-3">Official sales in filter</th>
-                <th className="px-5 py-3">Pending sales in filter</th>
+                <th className="px-5 py-3">Pending review sales in filter</th>
                 <th className="px-5 py-3">Recent report</th>
                 <th className="px-5 py-3"></th>
               </tr>
@@ -58,8 +62,8 @@ export default async function TeamPage({
             <tbody className="divide-y divide-border">
               {visibleMemberships.map((membership) => {
                 const memberReports = reports.filter((report) => report.memberId === membership.userId);
-                const officialReports = memberReports.filter((report) => report.status === "SUBMITTED" || report.status === "APPROVED");
-                const pendingReports = memberReports.filter((report) => report.status === "DRAFT" || report.status === "NEEDS_REVIEW");
+                const officialReports = memberReports.filter((report) => report.status === "APPROVED");
+                const pendingReports = memberReports.filter((report) => report.status === "SUBMITTED");
                 const officialSales = officialReports.reduce(
                   (sum, report) => sum + report.rows.reduce((rowSum, row) => rowSum + Number(row.salesAmount), 0),
                   0
@@ -68,7 +72,7 @@ export default async function TeamPage({
                   (sum, report) => sum + report.rows.reduce((rowSum, row) => rowSum + Number(row.salesAmount), 0),
                   0
                 );
-                const submitted = memberReports.filter((report) => report.status === "SUBMITTED" || report.status === "APPROVED").length;
+                const submitted = pendingReports.length;
                 const drafts = memberReports.filter((report) => report.status === "DRAFT").length;
                 const needsReview = memberReports.filter((report) => report.status === "NEEDS_REVIEW").length;
                 const latest = memberReports[0];
@@ -101,6 +105,33 @@ export default async function TeamPage({
           </table>
         </div>
       </section>
+
+      {canManageTeam ? (
+        <TeamManagementPanel
+          members={teamManagement.memberships.map((membership) => ({
+            id: membership.id,
+            userId: membership.userId,
+            role: membership.role,
+            active: membership.active,
+            user: membership.user
+          }))}
+          pendingInvitations={teamManagement.pendingInvitations.map((invite) => ({
+            id: invite.id,
+            email: invite.email,
+            role: invite.role,
+            status: invite.status,
+            expiresAt: invite.expiresAt.toISOString(),
+            createdAt: invite.createdAt.toISOString()
+          }))}
+          auditLogs={teamManagement.auditLogs.map((log) => ({
+            id: log.id,
+            action: log.action,
+            targetEmail: log.targetEmail,
+            message: log.message,
+            createdAt: log.createdAt.toISOString()
+          }))}
+        />
+      ) : null}
     </div>
   );
 }

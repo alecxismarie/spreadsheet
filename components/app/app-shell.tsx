@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import type { Route } from "next";
 import { LayoutDashboard, Settings, Table2, Users } from "lucide-react";
 import { signOutAction } from "@/lib/auth/actions";
@@ -18,7 +19,7 @@ export function AppShell({ context, children }: { context: Context; children: Re
     <div className="min-h-screen bg-canvas">
       <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-border bg-white px-4 py-5 lg:block">
         <div className="px-2">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Workspace</p>
+          <Image src="/workspacelogo.png" alt="Workspace" width={1200} height={900} className="h-7 w-auto object-contain" />
           <h1 className="mt-2 truncate text-lg font-semibold text-ink">{context.workspace.name}</h1>
         </div>
         <nav className="mt-8 space-y-1">

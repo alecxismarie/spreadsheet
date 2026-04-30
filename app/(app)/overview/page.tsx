@@ -39,7 +39,7 @@ export default async function OverviewPage({
       <section className="grid gap-4 md:grid-cols-6">
         <Kpi label="Official sales" value={currency(overview.totalSales)} />
         <Kpi label="Official units" value={overview.totalUnits.toLocaleString()} />
-        <Kpi label="Pending sales" value={currency(overview.pendingSales)} />
+        <Kpi label="Pending review sales" value={currency(overview.pendingSales)} />
         <Kpi label="Target progress" value={percent(overview.targetProgress)} tone={overview.targetVariance >= 0 ? "good" : "risk"} />
         <Kpi label="Submission health" value={percent(overview.submissionHealth)} />
         <Kpi label="Needs review" value={overview.reportsNeedingReview.toLocaleString()} tone={overview.reportsNeedingReview ? "risk" : "good"} />
@@ -59,7 +59,7 @@ export default async function OverviewPage({
                   <th className="px-5 py-3">Official units</th>
                   <th className="px-5 py-3">Target</th>
                   <th className="px-5 py-3">Variance</th>
-                  <th className="px-5 py-3">Pending sales</th>
+                  <th className="px-5 py-3">Pending review sales</th>
                   <th className="px-5 py-3">Drafts</th>
                 </tr>
               </thead>

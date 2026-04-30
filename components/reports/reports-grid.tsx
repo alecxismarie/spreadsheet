@@ -43,6 +43,13 @@ type Report = {
     createdAt: string;
     actor: { name: string } | null;
   }>;
+  reviewComments: Array<{
+    id: string;
+    body: string;
+    statusContext: "DRAFT" | "SUBMITTED" | "APPROVED" | "NEEDS_REVIEW";
+    createdAt: string;
+    author: { name: string } | null;
+  }>;
 };
 
 type EditableRow = {
@@ -432,13 +439,15 @@ export function ReportsGrid({
           ) : null}
         </form>
       ) : null}
-      {selectedReport ? <ActivityLog auditLogs={selectedReport.auditLogs} /> : null}
+      {selectedReport ? <ActivityLog auditLogs={selectedReport.auditLogs} reviewComments={selectedReport.reviewComments} /> : null}
       </div>
     </section>
   );
 }
 
 function ReportNotice({ report, editable }: { report: Report; editable: boolean }) {
+  const activeReviewComment = report.status === "NEEDS_REVIEW" ? report.reviewComments[0] : null;
+
   if (report.status === "NEEDS_REVIEW" && editable) {
     return (
       <div className="border-b border-border bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -447,7 +456,11 @@ function ReportNotice({ report, editable }: { report: Report; editable: boolean 
           <StatusBadge status={report.status} />
         </div>
         <p className="mt-1">Update the requested fields and resubmit when ready.</p>
-        {report.notes ? <p className="mt-2 font-medium">Review note: {report.notes}</p> : null}
+        {activeReviewComment ? (
+          <p className="mt-2 font-medium" data-testid="active-review-feedback">
+            Review feedback: {activeReviewComment.body}
+          </p>
+        ) : null}
       </div>
     );
   }
@@ -458,21 +471,40 @@ function ReportNotice({ report, editable }: { report: Report; editable: boolean 
         <span className="text-muted">Review status</span>
         <StatusBadge status={report.status} />
       </div>
-      {report.notes ? <p className="text-muted">{report.notes}</p> : null}
     </div>
   );
 }
 
-function ActivityLog({ auditLogs }: { auditLogs: Report["auditLogs"] }) {
+function ActivityLog({
+  auditLogs,
+  reviewComments
+}: {
+  auditLogs: Report["auditLogs"];
+  reviewComments: Report["reviewComments"];
+}) {
+  const hasActivity = auditLogs.length > 0 || reviewComments.length > 0;
+
   return (
     <section className="rounded-lg border border-border bg-white shadow-subtle">
       <div className="border-b border-border px-4 py-3">
         <h2 className="font-semibold text-ink">Activity</h2>
       </div>
-      {auditLogs.length === 0 ? (
+      {!hasActivity ? (
         <p className="px-4 py-5 text-sm text-muted">No activity recorded yet.</p>
       ) : (
         <div className="divide-y divide-border">
+          {reviewComments.map((comment) => (
+            <div key={comment.id} className="grid gap-1 px-4 py-3 text-sm md:grid-cols-[180px_1fr]" data-testid="review-history-comment">
+              <div>
+                <p className="font-medium text-ink">Review feedback</p>
+                <p className="text-xs text-muted">{new Date(comment.createdAt).toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-slate-700">{comment.author ? comment.author.name : "Unknown reviewer"}</p>
+                <p className="mt-1 text-muted">{comment.body}</p>
+              </div>
+            </div>
+          ))}
           {auditLogs.map((log) => (
             <div key={log.id} className="grid gap-1 px-4 py-3 text-sm md:grid-cols-[180px_1fr]">
               <div>

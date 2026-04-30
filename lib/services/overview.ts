@@ -44,10 +44,10 @@ export async function getOverview(session: AppSession, filters: OversightFilters
   const pendingSales = performance.reduce((sum, member) => sum + member.pendingSales, 0);
   const pendingUnits = performance.reduce((sum, member) => sum + member.pendingUnits, 0);
   const totalTarget = performance.reduce((sum, member) => sum + member.target, 0);
-  const submitted = reports.filter((report) => report.status === "SUBMITTED" || report.status === "APPROVED").length;
+  const submittedOrApproved = reports.filter((report) => report.status === "SUBMITTED" || report.status === "APPROVED").length;
   const needsReview = reports.filter((report) => report.status === "NEEDS_REVIEW").length;
   const draftReports = reports.filter((report) => report.status === "DRAFT").length;
-  const health = reports.length ? submitted / reports.length : 0;
+  const health = reports.length ? submittedOrApproved / reports.length : 0;
 
   return {
     totalSales,

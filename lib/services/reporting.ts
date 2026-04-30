@@ -118,7 +118,8 @@ export async function getReportsForWorkspace(
       member: { select: { id: true, name: true, email: true } },
       period: true,
       rows: { orderBy: { rowOrder: "asc" } },
-      auditLogs: { orderBy: { createdAt: "desc" } }
+      auditLogs: { orderBy: { createdAt: "desc" } },
+      reviewComments: { orderBy: { createdAt: "desc" } }
     },
     orderBy: [{ reportDate: "desc" }, { updatedAt: "desc" }]
   });
@@ -313,16 +314,29 @@ export async function updateReportStatus(
     return { ok: false, message: "Only submitted reports can be reviewed." };
   }
 
+  const reviewMessage = message?.trim();
+
   await prisma.$transaction(async (tx) => {
     await tx.salesReport.update({
       where: { id: reportId },
       data: {
         status,
         reviewedAt: new Date(),
-        reviewerId: session.userId,
-        notes: message?.trim() || report.notes
+        reviewerId: session.userId
       }
     });
+
+    if (status === "NEEDS_REVIEW") {
+      await tx.reportReviewComment.create({
+        data: {
+          workspaceId: session.workspaceId,
+          reportId,
+          authorId: session.userId,
+          statusContext: SubmissionStatus.NEEDS_REVIEW,
+          body: reviewMessage || "Report marked as needs review."
+        }
+      });
+    }
 
     await tx.reportAuditLog.create({
       data: {
@@ -330,7 +344,7 @@ export async function updateReportStatus(
         reportId,
         actorId: session.userId,
         action: status === "APPROVED" ? ReportAuditAction.APPROVED : ReportAuditAction.NEEDS_REVIEW,
-        message: message?.trim() || (status === "APPROVED" ? "Report approved." : "Report marked as needs review.")
+        message: reviewMessage || (status === "APPROVED" ? "Report approved." : "Report marked as needs review.")
       }
     });
   });

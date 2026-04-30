@@ -22,6 +22,13 @@ type ImportMapping = {
 };
 
 type ParsedRow = Record<string, string>;
+type ValidImportRow = {
+  customer: string;
+  product: string;
+  salesAmount: number;
+  unitsSold: number;
+  notes?: string;
+};
 type ParsedImportInput = {
   ok: true;
   memberId: string;
@@ -50,6 +57,8 @@ export type ImportRowsState = {
   summary?: {
     parsedRows: number;
     validRows: number;
+    importedRows: number;
+    skippedDuplicates: number;
     invalidRows: number;
     ignoredEmptyRows: number;
   };
@@ -144,6 +153,8 @@ export async function importRowsAsDraft(session: AppSession, input: unknown): Pr
       summary: {
         parsedRows: rows.length,
         validRows: validated.validRows.length,
+        importedRows: 0,
+        skippedDuplicates: 0,
         invalidRows: validated.rowErrors.length,
         ignoredEmptyRows: validated.ignoredEmptyRows
       },
@@ -157,7 +168,7 @@ export async function importRowsAsDraft(session: AppSession, input: unknown): Pr
     return { ok: false, message: "Report date is invalid." };
   }
 
-  const report = await prisma.$transaction(async (tx) => {
+  const importResult = await prisma.$transaction(async (tx) => {
     const importBatchId = randomUUID();
     const existingDraft = await tx.salesReport.findFirst({
       where: {
@@ -170,6 +181,7 @@ export async function importRowsAsDraft(session: AppSession, input: unknown): Pr
       include: { rows: { orderBy: { rowOrder: "desc" } } },
       orderBy: { updatedAt: "desc" }
     });
+    const deduplicated = removeDuplicateRows(validated.validRows, existingDraft?.rows ?? []);
 
     const draft =
       existingDraft ??
@@ -185,19 +197,21 @@ export async function importRowsAsDraft(session: AppSession, input: unknown): Pr
       }));
 
     const startingOrder = existingDraft?.rows[0]?.rowOrder != null ? existingDraft.rows[0].rowOrder + 1 : 0;
-    await tx.salesReportRow.createMany({
-      data: validated.validRows.map((row, index) => ({
-        reportId: draft.id,
-        customer: row.customer,
-        product: row.product,
-        salesAmount: row.salesAmount,
-        unitsSold: row.unitsSold,
-        notes: row.notes || null,
-        rowOrder: startingOrder + index,
-        importBatchId,
-        importFilename: filename
-      }))
-    });
+    if (deduplicated.rowsToImport.length > 0) {
+      await tx.salesReportRow.createMany({
+        data: deduplicated.rowsToImport.map((row, index) => ({
+          reportId: draft.id,
+          customer: row.customer,
+          product: row.product,
+          salesAmount: row.salesAmount,
+          unitsSold: row.unitsSold,
+          notes: row.notes || null,
+          rowOrder: startingOrder + index,
+          importBatchId,
+          importFilename: filename
+        }))
+      });
+    }
 
     await tx.reportAuditLog.create({
       data: {
@@ -205,11 +219,15 @@ export async function importRowsAsDraft(session: AppSession, input: unknown): Pr
         reportId: draft.id,
         actorId: session.userId,
         action: ReportAuditAction.IMPORTED,
-        message: `Imported ${validated.validRows.length} row${validated.validRows.length === 1 ? "" : "s"} from ${filename}.`
+        message: importAuditMessage(filename, deduplicated.rowsToImport.length, deduplicated.skippedDuplicates)
       }
     });
 
-    return draft;
+    return {
+      report: draft,
+      importedRows: deduplicated.rowsToImport.length,
+      skippedDuplicates: deduplicated.skippedDuplicates
+    };
   });
 
   revalidatePath("/reports");
@@ -218,11 +236,13 @@ export async function importRowsAsDraft(session: AppSession, input: unknown): Pr
 
   return {
     ok: true,
-    message: `Imported ${validated.validRows.length} row${validated.validRows.length === 1 ? "" : "s"} into a draft report.`,
-    reportId: report.id,
+    message: importSuccessMessage(importResult.importedRows, importResult.skippedDuplicates),
+    reportId: importResult.report.id,
     summary: {
       parsedRows: rows.length,
       validRows: validated.validRows.length,
+      importedRows: importResult.importedRows,
+      skippedDuplicates: importResult.skippedDuplicates,
       invalidRows: 0,
       ignoredEmptyRows: validated.ignoredEmptyRows
     }
@@ -383,7 +403,7 @@ function parseImportInput(input: unknown):
 }
 
 function validateMappedRows(rows: ParsedRow[], mapping: Required<Pick<ImportMapping, "customer" | "product" | "salesAmount" | "unitsSold">> & ImportMapping) {
-  const validRows: Array<{ customer: string; product: string; salesAmount: number; unitsSold: number; notes?: string }> = [];
+  const validRows: ValidImportRow[] = [];
   const rowErrors: Array<{ rowNumber: number; errors: string[] }> = [];
   let ignoredEmptyRows = 0;
 
@@ -417,6 +437,59 @@ function validateMappedRows(rows: ParsedRow[], mapping: Required<Pick<ImportMapp
   });
 
   return { validRows, rowErrors, ignoredEmptyRows };
+}
+
+function removeDuplicateRows(
+  rows: ValidImportRow[],
+  existingRows: Array<{ customer: string; product: string; salesAmount: unknown; unitsSold: number; notes: string | null }>
+) {
+  const seen = new Set(existingRows.map(rowSignature));
+  const rowsToImport: ValidImportRow[] = [];
+  let skippedDuplicates = 0;
+
+  for (const row of rows) {
+    const signature = rowSignature(row);
+    if (seen.has(signature)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+
+    seen.add(signature);
+    rowsToImport.push(row);
+  }
+
+  return { rowsToImport, skippedDuplicates };
+}
+
+function rowSignature(row: { customer: string; product: string; salesAmount: unknown; unitsSold: number; notes?: string | null }) {
+  return [
+    normalizeSignatureText(row.customer),
+    normalizeSignatureText(row.product),
+    normalizeSignatureMoney(row.salesAmount),
+    String(row.unitsSold),
+    normalizeSignatureText(row.notes ?? "")
+  ].join("\u001f");
+}
+
+function normalizeSignatureText(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizeSignatureMoney(value: unknown) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? amount.toFixed(2) : "";
+}
+
+function importSuccessMessage(importedRows: number, skippedDuplicates: number) {
+  const imported = `Imported ${importedRows} row${importedRows === 1 ? "" : "s"} into a draft report.`;
+  if (skippedDuplicates === 0) return imported;
+  return `${imported} Skipped ${skippedDuplicates} duplicate row${skippedDuplicates === 1 ? "" : "s"}.`;
+}
+
+function importAuditMessage(filename: string, importedRows: number, skippedDuplicates: number) {
+  const imported = `Imported ${importedRows} row${importedRows === 1 ? "" : "s"} from ${filename}.`;
+  if (skippedDuplicates === 0) return imported;
+  return `${imported} Skipped ${skippedDuplicates} duplicate row${skippedDuplicates === 1 ? "" : "s"}.`;
 }
 
 function getExtension(filename: string) {

@@ -109,7 +109,6 @@ export async function requireCurrentSession() {
   const session = await requireSession();
   const currentSession = await refreshSession(session);
   if (!currentSession) {
-    await clearSession();
     redirect("/signin");
   }
   return currentSession;
@@ -129,7 +128,6 @@ export async function getCurrentUser() {
 
   const membership = user.memberships[0];
   if (!membership) {
-    await clearSession();
     redirect("/signin");
   }
 
