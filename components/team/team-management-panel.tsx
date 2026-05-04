@@ -12,7 +12,7 @@ import type { TeamActionState } from "@/lib/services/team";
 
 type Role = "OWNER" | "MANAGER" | "MEMBER";
 type InvitationStatus = "PENDING" | "ACCEPTED" | "EXPIRED" | "REVOKED";
-type TeamAuditAction = "INVITE_CREATED" | "ROLE_CHANGED" | "MEMBER_DEACTIVATED" | "MEMBER_REACTIVATED";
+type TeamAuditAction = "INVITE_CREATED" | "INVITE_ACCEPTED" | "ROLE_CHANGED" | "MEMBER_DEACTIVATED" | "MEMBER_REACTIVATED";
 
 type TeamMember = {
   id: string;

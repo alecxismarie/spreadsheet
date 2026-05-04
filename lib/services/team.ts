@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from "crypto";
 import { InvitationStatus, Prisma, Role, TeamAuditAction } from "@prisma/client";
+import bcrypt from "bcryptjs";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { passwordSchema } from "@/lib/auth/password";
 import { canManageWorkspace, canViewWorkspaceReports } from "@/lib/auth/permissions";
 import { refreshSession, type AppSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
@@ -60,12 +62,58 @@ const membershipSchema = z.object({
   membershipId: z.string().min(1)
 });
 
+const inviteAcceptanceSchema = z
+  .object({
+    token: z.string().trim().min(1).max(512),
+    password: passwordSchema,
+    confirmPassword: z.string()
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Passwords do not match.",
+    path: ["confirmPassword"]
+  });
+
 export type TeamActionState = {
   ok: boolean;
   message: string;
   inviteLink?: string;
   fieldErrors?: Record<string, string[] | undefined>;
 };
+
+export type InviteAcceptanceState = {
+  ok: boolean;
+  message: string;
+  fieldErrors?: Record<string, string[] | undefined>;
+};
+
+export type InviteAcceptanceDetails =
+  | {
+      state: "valid";
+      workspaceName: string;
+      email: string;
+      role: Role;
+      expiresAt: Date;
+      accountExists: boolean;
+    }
+  | {
+      state: "invalid" | "expired" | "revoked" | "accepted";
+      message: string;
+    };
+
+export type AcceptedInviteSession = {
+  userId: string;
+  workspaceId: string;
+  role: Role;
+  sessionVersion: number;
+};
+
+export type InviteAcceptanceResult =
+  | (InviteAcceptanceState & { ok: false })
+  | {
+      ok: true;
+      message: string;
+      session: AcceptedInviteSession;
+    };
 
 export type TeamManagementData = {
   memberships: Prisma.MembershipGetPayload<{ select: typeof memberSelect }>[];
@@ -76,6 +124,10 @@ export type TeamManagementData = {
 class TeamServiceError extends Error {}
 
 function fail(message: string, fieldErrors?: TeamActionState["fieldErrors"]): TeamActionState {
+  return { ok: false, message, fieldErrors };
+}
+
+function inviteFail(message: string, fieldErrors?: InviteAcceptanceState["fieldErrors"]): InviteAcceptanceState & { ok: false } {
   return { ok: false, message, fieldErrors };
 }
 
@@ -99,6 +151,24 @@ function buildInviteLink(token: string) {
 
 function roleLabel(role: Role) {
   return role.toLowerCase().replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function nameFromEmail(email: string) {
+  const localPart = email.split("@")[0] ?? "";
+  const normalized = localPart
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return "Workspace member";
+  return normalized.replace(/\b\w/g, (letter) => letter.toUpperCase()).slice(0, 120);
+}
+
+function inviteUnavailableMessage(status: InvitationStatus) {
+  if (status === InvitationStatus.ACCEPTED) return "This invite has already been accepted.";
+  if (status === InvitationStatus.REVOKED) return "This invite has been revoked.";
+  if (status === InvitationStatus.EXPIRED) return "This invite has expired.";
+  return "This invite link is invalid.";
 }
 
 async function ensureCanRemoveActiveOwner(
@@ -239,6 +309,224 @@ export async function inviteTeamMember(session: AppSession, input: unknown): Pro
 
   revalidatePath("/team");
   return { ok: true, message: `Invite created for ${email}.`, inviteLink: buildInviteLink(token) };
+}
+
+export async function getInviteAcceptanceDetails(token: string | undefined, now = new Date()): Promise<InviteAcceptanceDetails> {
+  const normalizedToken = token?.trim();
+  if (!normalizedToken) {
+    return { state: "invalid", message: "This invite link is invalid." };
+  }
+
+  const invite = await prisma.workspaceInvitation.findUnique({
+    where: { tokenHash: hashInviteToken(normalizedToken) },
+    select: {
+      email: true,
+      role: true,
+      status: true,
+      expiresAt: true,
+      workspace: {
+        select: {
+          name: true
+        }
+      }
+    }
+  });
+
+  if (!invite) {
+    return { state: "invalid", message: "This invite link is invalid." };
+  }
+
+  if (invite.status !== InvitationStatus.PENDING) {
+    return {
+      state:
+        invite.status === InvitationStatus.ACCEPTED
+          ? "accepted"
+          : invite.status === InvitationStatus.REVOKED
+            ? "revoked"
+            : "expired",
+      message: inviteUnavailableMessage(invite.status)
+    };
+  }
+
+  if (invite.expiresAt <= now) {
+    return { state: "expired", message: "This invite has expired." };
+  }
+
+  const accountExists = Boolean(
+    await prisma.user.findUnique({
+      where: { email: invite.email },
+      select: { id: true }
+    })
+  );
+
+  return {
+    state: "valid",
+    workspaceName: invite.workspace.name,
+    email: invite.email,
+    role: invite.role,
+    expiresAt: invite.expiresAt,
+    accountExists
+  };
+}
+
+export async function acceptWorkspaceInvitation(input: unknown, now = new Date()): Promise<InviteAcceptanceResult> {
+  const parsed = inviteAcceptanceSchema.safeParse(input);
+  if (!parsed.success) {
+    return inviteFail("Invite acceptance failed.", parsed.error.flatten().fieldErrors);
+  }
+
+  const { token, password } = parsed.data;
+  const tokenHash = hashInviteToken(token);
+  const invite = await prisma.workspaceInvitation.findUnique({
+    where: { tokenHash },
+    include: {
+      workspace: { select: { name: true } }
+    }
+  });
+
+  if (!invite) {
+    return inviteFail("This invite link is invalid.");
+  }
+  if (invite.status !== InvitationStatus.PENDING) {
+    return inviteFail(inviteUnavailableMessage(invite.status));
+  }
+  if (invite.expiresAt <= now) {
+    return inviteFail("This invite has expired.");
+  }
+
+  const existingUser = await prisma.user.findUnique({
+    where: { email: invite.email },
+    select: {
+      id: true,
+      passwordHash: true
+    }
+  });
+
+  if (existingUser && !(await bcrypt.compare(password, existingUser.passwordHash))) {
+    return inviteFail("Password did not match the existing account for this invite.");
+  }
+
+  const newUserPasswordHash = existingUser ? null : await bcrypt.hash(password, 10);
+
+  try {
+    const accepted = await prisma.$transaction(async (tx): Promise<AcceptedInviteSession> => {
+      const reservedInvite = await tx.workspaceInvitation.updateMany({
+        where: {
+          id: invite.id,
+          tokenHash,
+          status: InvitationStatus.PENDING,
+          expiresAt: { gt: now }
+        },
+        data: {
+          status: InvitationStatus.ACCEPTED,
+          acceptedAt: now
+        }
+      });
+
+      if (reservedInvite.count !== 1) {
+        throw new TeamServiceError("This invite is no longer available.");
+      }
+
+      let user = await tx.user.findUnique({
+        where: { email: invite.email },
+        include: {
+          memberships: {
+            where: { workspaceId: invite.workspaceId },
+            select: {
+              id: true,
+              active: true,
+              role: true
+            }
+          }
+        }
+      });
+
+      if (user && (!existingUser || user.id !== existingUser.id)) {
+        throw new TeamServiceError("An account now exists for this invite email. Reload the invite and use that account password.");
+      }
+
+      if (!user) {
+        user = await tx.user.create({
+          data: {
+            email: invite.email,
+            name: nameFromEmail(invite.email),
+            passwordHash: newUserPasswordHash!
+          },
+          include: {
+            memberships: {
+              where: { workspaceId: invite.workspaceId },
+              select: {
+                id: true,
+                active: true,
+                role: true
+              }
+            }
+          }
+        });
+      }
+
+      const existingMembership = user.memberships[0];
+      if (existingMembership?.active) {
+        throw new TeamServiceError("This account is already an active member of the invited workspace.");
+      }
+
+      if (existingMembership) {
+        await tx.membership.update({
+          where: { id: existingMembership.id },
+          data: {
+            active: true,
+            role: invite.role
+          }
+        });
+      } else {
+        await tx.membership.create({
+          data: {
+            userId: user.id,
+            workspaceId: invite.workspaceId,
+            role: invite.role,
+            active: true
+          }
+        });
+      }
+
+      const updatedUser = await tx.user.update({
+        where: { id: user.id },
+        data: { sessionVersion: { increment: 1 } },
+        select: {
+          id: true,
+          name: true,
+          sessionVersion: true
+        }
+      });
+
+      await tx.teamAuditLog.create({
+        data: {
+          workspaceId: invite.workspaceId,
+          actorId: updatedUser.id,
+          action: TeamAuditAction.INVITE_ACCEPTED,
+          targetUserId: updatedUser.id,
+          targetEmail: invite.email,
+          message: `${updatedUser.name} accepted invite as ${roleLabel(invite.role)}.`
+        }
+      });
+
+      return {
+        userId: updatedUser.id,
+        workspaceId: invite.workspaceId,
+        role: invite.role,
+        sessionVersion: updatedUser.sessionVersion
+      };
+    });
+
+    revalidatePath("/team");
+    return {
+      ok: true,
+      message: `Invite accepted for ${invite.workspace.name}.`,
+      session: accepted
+    };
+  } catch (error) {
+    return inviteFail(error instanceof TeamServiceError ? error.message : "Invite acceptance failed.");
+  }
 }
 
 export async function changeMemberRole(session: AppSession, input: unknown): Promise<TeamActionState> {

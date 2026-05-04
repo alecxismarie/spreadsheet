@@ -47,6 +47,7 @@ enum InvitationStatus {
 
 enum TeamAuditAction {
   INVITE_CREATED
+  INVITE_ACCEPTED
   ROLE_CHANGED
   MEMBER_DEACTIVATED
   MEMBER_REACTIVATED
@@ -59,6 +60,7 @@ model User {
   passwordHash String
   sessionVersion Int         @default(1)
   memberships  Membership[]
+  passwordResetTokens PasswordResetToken[]
   reports      SalesReport[] @relation("ReportOwner")
   targets      SalesTarget[] @relation("TargetOwner")
   createdAt    DateTime      @default(now())
@@ -95,6 +97,21 @@ model AuthRateLimit {
 
   @@index([email])
   @@index([lockedUntil])
+}
+
+model PasswordResetToken {
+  id              String    @id @default(cuid())
+  userId          String
+  tokenHash       String    @unique
+  expiresAt       DateTime
+  usedAt          DateTime?
+  requestedIpHash String?
+  userAgent       String?   @db.Text
+  createdAt       DateTime  @default(now())
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model Membership {

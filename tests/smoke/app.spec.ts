@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
-import { PrismaClient, type ReportAuditAction, type SubmissionStatus } from "@prisma/client";
+import { PrismaClient, type ReportAuditAction, type SubmissionStatus, type TeamAuditAction } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { createHash, randomBytes } from "crypto";
 
 const prisma = new PrismaClient();
 const password = "demo1234";
@@ -14,6 +15,9 @@ const smokeCustomerPrefix = "SMOKE TEST ";
 const rateLimitEmailPrefix = "smoke-rate-limit-";
 const teamMemberEmailPrefix = "smoke-team-member-";
 const teamInviteEmailPrefix = "smoke-team-invite-";
+const passwordResetEmailPrefix = "smoke-reset-user-";
+const invitePassword = "invite1234";
+const passwordResetGenericMessage = "If an account exists for that email, a reset link has been created/sent.";
 
 test.describe.configure({ mode: "serial" });
 
@@ -133,6 +137,157 @@ test("owner manages team lifecycle and non-admins cannot manage users", async ({
   } finally {
     await memberContext.close();
   }
+});
+
+test("invite acceptance creates a new user, signs in, audits, and blocks reuse", async ({ page }) => {
+  const suffix = Date.now();
+  const email = `${teamInviteEmailPrefix}${suffix}@northstar.test`;
+  const invite = await createWorkspaceInvite(email, "MEMBER");
+
+  await page.goto(`/invite/${invite.token}`);
+  await expect(page.getByTestId("invite-workspace")).toContainText("Northstar Sales");
+  await expect(page.getByTestId("invite-email")).toContainText(email);
+  await expect(page.getByTestId("invite-role")).toContainText("MEMBER");
+  await page.getByTestId("invite-password").fill(invitePassword);
+  await page.getByTestId("invite-confirm-password").fill(invitePassword);
+  await page.getByTestId("invite-accept-submit").click();
+  await expect(page).toHaveURL(/\/overview$/);
+
+  const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+  const membership = await getMembershipByEmail(email);
+  const acceptedInvite = await prisma.workspaceInvitation.findUniqueOrThrow({ where: { id: invite.inviteId } });
+  expect(membership.active).toBe(true);
+  expect(membership.role).toBe("MEMBER");
+  expect(acceptedInvite.status).toBe("ACCEPTED");
+  expect(acceptedInvite.acceptedAt).not.toBeNull();
+  expect(await bcrypt.compare(invitePassword, user.passwordHash)).toBeTruthy();
+  await expectTeamAuditAction(email, "INVITE_ACCEPTED");
+
+  await signOut(page);
+  await signInWithPassword(page, email, invitePassword);
+  await signOut(page);
+
+  await page.goto(`/invite/${invite.token}`);
+  await expect(page.getByTestId("invite-state-message")).toContainText("This invite has already been accepted.");
+});
+
+test("invite acceptance handles existing users and rejects unavailable invites", async ({ page }) => {
+  const suffix = Date.now();
+  const existingEmail = `${teamInviteEmailPrefix}${suffix}-existing@northstar.test`;
+  const existingPassword = "existing1234";
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "northstar-sales" } });
+  const passwordHash = await bcrypt.hash(existingPassword, 10);
+  const existingUser = await prisma.user.create({
+    data: {
+      email: existingEmail,
+      name: "Existing Invite User",
+      passwordHash
+    }
+  });
+  await prisma.membership.create({
+    data: {
+      userId: existingUser.id,
+      workspaceId: workspace.id,
+      role: "MEMBER",
+      active: false
+    }
+  });
+  const existingInvite = await createWorkspaceInvite(existingEmail, "MANAGER");
+
+  await page.goto(`/invite/${existingInvite.token}`);
+  await expect(page.getByText("This email already has an account.")).toBeVisible();
+  await page.getByTestId("invite-password").fill(existingPassword);
+  await page.getByTestId("invite-confirm-password").fill(existingPassword);
+  await page.getByTestId("invite-accept-submit").click();
+  await expect(page).toHaveURL(/\/overview$/);
+
+  const updatedUser = await prisma.user.findUniqueOrThrow({ where: { email: existingEmail } });
+  const acceptedInvite = await prisma.workspaceInvitation.findUniqueOrThrow({ where: { id: existingInvite.inviteId } });
+  expect(updatedUser.name).toBe("Existing Invite User");
+  expect(updatedUser.sessionVersion).toBeGreaterThan(existingUser.sessionVersion);
+  expect(await bcrypt.compare(existingPassword, updatedUser.passwordHash)).toBeTruthy();
+  await waitForMembership(existingEmail, "MANAGER", true);
+  expect(acceptedInvite.status).toBe("ACCEPTED");
+  expect(acceptedInvite.acceptedAt).not.toBeNull();
+  await expectTeamAuditAction(existingEmail, "INVITE_ACCEPTED");
+  await signOut(page);
+
+  const expiredInvite = await createWorkspaceInvite(`${teamInviteEmailPrefix}${suffix}-expired@northstar.test`, "MEMBER", {
+    expiresAt: new Date(Date.now() - 60_000)
+  });
+  await page.goto(`/invite/${expiredInvite.token}`);
+  await expect(page.getByTestId("invite-state-message")).toContainText("This invite has expired.");
+
+  const revokedInvite = await createWorkspaceInvite(`${teamInviteEmailPrefix}${suffix}-revoked@northstar.test`, "MEMBER", {
+    status: "REVOKED"
+  });
+  await page.goto(`/invite/${revokedInvite.token}`);
+  await expect(page.getByTestId("invite-state-message")).toContainText("This invite has been revoked.");
+
+  await page.goto(`/invite/${randomBytes(32).toString("base64url")}`);
+  await expect(page.getByTestId("invite-state-message")).toContainText("This invite link is invalid.");
+});
+
+test("password reset request and completion are generic, single-use, and invalidate old sessions", async ({ page }) => {
+  const suffix = Date.now();
+  const email = `${passwordResetEmailPrefix}${suffix}@northstar.test`;
+  const unknownEmail = `${passwordResetEmailPrefix}${suffix}-unknown@northstar.test`;
+  const oldPassword = "oldreset1234";
+  const newPassword = "newreset1234";
+  const { user } = await createSmokeTeamMember(email, oldPassword);
+
+  await page.goto("/signin");
+  await page.getByTestId("forgot-password-link").click();
+  await expect(page).toHaveURL(/\/forgot-password$/);
+  await page.getByTestId("forgot-email").fill(email);
+  await page.getByTestId("forgot-submit").click();
+  await expect(page.getByTestId("forgot-message")).toContainText(passwordResetGenericMessage);
+  const resetHref = await page.getByTestId("forgot-reset-link").getAttribute("href");
+  expect(resetHref).toBeTruthy();
+  const resetTokenValue = tokenFromResetHref(resetHref!);
+  const resetToken = await waitForPasswordResetToken(email);
+  expect(resetToken.tokenHash).toBe(hashPasswordResetToken(resetTokenValue));
+  expect(resetToken.tokenHash).not.toBe(resetTokenValue);
+  expect(resetToken.expiresAt.getTime()).toBeGreaterThan(Date.now());
+  expect(resetToken.usedAt).toBeNull();
+
+  await page.goto("/forgot-password");
+  await page.getByTestId("forgot-email").fill(unknownEmail);
+  await page.getByTestId("forgot-submit").click();
+  await expect(page.getByTestId("forgot-message")).toContainText(passwordResetGenericMessage);
+  await expect(page.getByTestId("forgot-reset-link")).toHaveCount(0);
+  await expect.poll(() => prisma.passwordResetToken.count({ where: { user: { email: unknownEmail } } })).toBe(0);
+
+  const expiredTokenValue = randomBytes(32).toString("base64url");
+  await prisma.passwordResetToken.create({
+    data: {
+      userId: user.id,
+      tokenHash: hashPasswordResetToken(expiredTokenValue),
+      expiresAt: new Date(Date.now() - 60_000)
+    }
+  });
+  await page.goto(`/reset-password/${expiredTokenValue}`);
+  await expect(page.getByTestId("reset-state-message")).toContainText("This reset link has expired.");
+
+  await page.goto(resetHref!);
+  await page.getByTestId("reset-password").fill(newPassword);
+  await page.getByTestId("reset-confirm-password").fill(newPassword);
+  await page.getByTestId("reset-submit").click();
+  await expect(page).toHaveURL(/\/signin\?reset=success$/);
+  await expect(page.getByTestId("reset-success-message")).toBeVisible();
+
+  const usedToken = await prisma.passwordResetToken.findUniqueOrThrow({ where: { id: resetToken.id } });
+  const updatedUser = await prisma.user.findUniqueOrThrow({ where: { email } });
+  expect(usedToken.usedAt).not.toBeNull();
+  expect(updatedUser.sessionVersion).toBeGreaterThan(user.sessionVersion);
+  expect(await bcrypt.compare(newPassword, updatedUser.passwordHash)).toBeTruthy();
+
+  await page.goto(resetHref!);
+  await expect(page.getByTestId("reset-state-message")).toContainText("This reset link has already been used.");
+
+  await expectSignInFails(page, email, oldPassword);
+  await signInWithPassword(page, email, newPassword);
+  await signOut(page);
 });
 
 test("member report lifecycle, manager review, approval, and CSV import smoke", async ({ page }) => {
@@ -307,11 +462,23 @@ test("legacy xls files are rejected cleanly", async ({ page }) => {
 });
 
 async function signIn(page: Page, email: string) {
+  await signInWithPassword(page, email, password);
+}
+
+async function signInWithPassword(page: Page, email: string, signInPassword: string) {
   await page.goto("/signin");
   await page.getByTestId("sign-in-email").fill(email);
-  await page.getByTestId("sign-in-password").fill(password);
+  await page.getByTestId("sign-in-password").fill(signInPassword);
   await page.getByTestId("sign-in-submit").click();
   await expect(page).toHaveURL(/\/overview$/);
+}
+
+async function expectSignInFails(page: Page, email: string, signInPassword: string) {
+  await page.goto("/signin");
+  await page.getByTestId("sign-in-email").fill(email);
+  await page.getByTestId("sign-in-password").fill(signInPassword);
+  await page.getByTestId("sign-in-submit").click();
+  await expect(page.getByText("Invalid email or password.")).toBeVisible();
 }
 
 async function signOut(page: Page) {
@@ -407,9 +574,9 @@ async function waitForRateLimitAttempts(email: string, attempts: number) {
   throw new Error(`Rate-limit record for ${email} did not reach ${attempts} attempts.`);
 }
 
-async function createSmokeTeamMember(email: string) {
+async function createSmokeTeamMember(email: string, memberPassword = password) {
   const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "northstar-sales" } });
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash = await bcrypt.hash(memberPassword, 10);
   const user = await prisma.user.upsert({
     where: { email },
     update: {
@@ -479,6 +646,75 @@ async function expectTeamAuditCount(emails: string[], minimumCount: number) {
     .toBeGreaterThanOrEqual(minimumCount);
 }
 
+async function expectTeamAuditAction(email: string, action: TeamAuditAction) {
+  await expect
+    .poll(() =>
+      prisma.teamAuditLog.count({
+        where: {
+          targetEmail: email,
+          action
+        }
+      })
+    )
+    .toBeGreaterThanOrEqual(1);
+}
+
+async function createWorkspaceInvite(
+  email: string,
+  role: "OWNER" | "MANAGER" | "MEMBER",
+  options: { status?: "PENDING" | "ACCEPTED" | "EXPIRED" | "REVOKED"; expiresAt?: Date } = {}
+) {
+  const [workspace, owner] = await Promise.all([
+    prisma.workspace.findUniqueOrThrow({ where: { slug: "northstar-sales" } }),
+    prisma.user.findUniqueOrThrow({ where: { email: users.owner } })
+  ]);
+  const token = randomBytes(32).toString("base64url");
+  const invite = await prisma.workspaceInvitation.create({
+    data: {
+      workspaceId: workspace.id,
+      email,
+      role,
+      tokenHash: hashInviteToken(token),
+      status: options.status ?? "PENDING",
+      invitedById: owner.id,
+      expiresAt: options.expiresAt ?? new Date(Date.now() + 1000 * 60 * 60),
+      acceptedAt: options.status === "ACCEPTED" ? new Date() : null
+    }
+  });
+
+  return {
+    token,
+    inviteId: invite.id
+  };
+}
+
+function hashInviteToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function hashPasswordResetToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function tokenFromResetHref(href: string) {
+  const url = new URL(href, baseURL);
+  const token = url.pathname.split("/").pop();
+  if (!token) throw new Error(`Could not read reset token from ${href}.`);
+  return token;
+}
+
+async function waitForPasswordResetToken(email: string) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const token = await prisma.passwordResetToken.findFirst({
+      where: { user: { email } },
+      orderBy: { createdAt: "desc" }
+    });
+    if (token) return token;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Password reset token for ${email} was not created.`);
+}
+
 async function waitForExportAudit(
   actorEmail: string,
   expected: {
@@ -528,7 +764,10 @@ async function cleanupSmokeData() {
     where: {
       OR: [
         { email: { startsWith: rateLimitEmailPrefix } },
-        { email: { startsWith: teamMemberEmailPrefix } }
+        { email: { startsWith: teamMemberEmailPrefix } },
+        { email: { startsWith: teamInviteEmailPrefix } },
+        { email: { startsWith: passwordResetEmailPrefix } },
+        { email: "password-reset-token" }
       ]
     }
   });
@@ -537,7 +776,8 @@ async function cleanupSmokeData() {
     where: {
       OR: [
         { email: { startsWith: teamMemberEmailPrefix } },
-        { email: { startsWith: teamInviteEmailPrefix } }
+        { email: { startsWith: teamInviteEmailPrefix } },
+        { email: { startsWith: passwordResetEmailPrefix } }
       ]
     }
   });
@@ -546,7 +786,8 @@ async function cleanupSmokeData() {
     where: {
       OR: [
         { targetEmail: { startsWith: teamMemberEmailPrefix } },
-        { targetEmail: { startsWith: teamInviteEmailPrefix } }
+        { targetEmail: { startsWith: teamInviteEmailPrefix } },
+        { targetEmail: { startsWith: passwordResetEmailPrefix } }
       ]
     }
   });
@@ -555,7 +796,8 @@ async function cleanupSmokeData() {
     where: {
       OR: [
         { email: { startsWith: teamMemberEmailPrefix } },
-        { email: { startsWith: teamInviteEmailPrefix } }
+        { email: { startsWith: teamInviteEmailPrefix } },
+        { email: { startsWith: passwordResetEmailPrefix } }
       ]
     }
   });
