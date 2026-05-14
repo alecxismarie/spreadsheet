@@ -3,7 +3,14 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { canAccessMember, canReviewReports, canViewWorkspaceReports } from "@/lib/auth/permissions";
 import { refreshSession, type AppSession } from "@/lib/auth/session";
-import { endOfDateFilter, startOfDateFilter } from "@/lib/domain/date-range";
+import { canonicalReportDate, parseDateRangeFilters } from "@/lib/domain/date-range";
+import {
+  DB_STRING_LIMITS,
+  dbVarcharSchema,
+  decimal12_2Schema,
+  nonNegativeIntSchema
+} from "@/lib/domain/db-constraints";
+import { DUPLICATE_REPORT_MESSAGE, isReportUniqueConstraintError } from "@/lib/domain/report-uniqueness";
 import { prisma } from "@/lib/prisma";
 
 const membershipListSelect = {
@@ -25,22 +32,30 @@ const membershipListSelect = {
 
 export const rowInputSchema = z.object({
   id: z.string().optional(),
-  customer: z.string().trim().min(1, "Customer is required"),
-  product: z.string().trim().min(1, "Product is required"),
-  salesAmount: z.coerce.number().min(0, "Sales amount cannot be negative"),
-  unitsSold: z.coerce.number().int().min(0, "Units cannot be negative"),
+  customer: dbVarcharSchema("Customer", DB_STRING_LIMITS.reportCustomer),
+  product: dbVarcharSchema("Product", DB_STRING_LIMITS.reportProduct),
+  salesAmount: decimal12_2Schema("Sales amount"),
+  unitsSold: nonNegativeIntSchema("Units sold"),
   notes: z.string().trim().optional(),
-  rowOrder: z.number().int().nonnegative()
+  rowOrder: nonNegativeIntSchema("Row order")
 });
 
 export const reportInputSchema = z.object({
   reportId: z.string().optional(),
   memberId: z.string().min(1),
   periodId: z.string().min(1),
-  reportDate: z.coerce.date(),
+  reportDate: z.unknown().transform((value, ctx) => {
+    const date = canonicalReportDate(value);
+    if (!date) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Report date must be a valid YYYY-MM-DD date." });
+      return z.NEVER;
+    }
+    return date;
+  }),
   statusIntent: z.enum(["SAVE_DRAFT", "SUBMIT"]),
   rows: z.array(rowInputSchema).min(1, "Add at least one row")
 });
+
 
 export type ReportSaveResult = {
   ok: boolean;
@@ -94,8 +109,9 @@ export async function getReportsForWorkspace(
   session = currentSession;
 
   const memberId = canViewWorkspaceReports(session.role) ? filters.memberId : session.userId;
-  const from = startOfDateFilter(filters.from);
-  const to = endOfDateFilter(filters.to);
+  const dateRange = parseDateRangeFilters(filters.from, filters.to);
+  if (!dateRange.ok) return [];
+  const { from, to } = dateRange;
   const where: Prisma.SalesReportWhereInput = {
     workspaceId: session.workspaceId,
     ...(memberId ? { memberId } : {}),
@@ -164,7 +180,7 @@ export async function saveReport(session: AppSession, input: unknown): Promise<R
     return { ok: false, message: "Reporting period was not found." };
   }
 
-  const existing = data.reportId
+  let existing = data.reportId
     ? await prisma.salesReport.findFirst({
         where: { id: data.reportId, workspaceId: session.workspaceId },
         include: { rows: true }
@@ -182,6 +198,25 @@ export async function saveReport(session: AppSession, input: unknown): Promise<R
     }
   }
 
+  const conflictingReport = await prisma.salesReport.findFirst({
+    where: {
+      workspaceId: session.workspaceId,
+      memberId: data.memberId,
+      periodId: data.periodId,
+      reportDate: data.reportDate,
+      ...(existing ? { NOT: { id: existing.id } } : {})
+    },
+    include: { rows: true }
+  });
+
+  if (conflictingReport) {
+    if (!data.reportId && conflictingReport.status === SubmissionStatus.DRAFT) {
+      existing = conflictingReport;
+    } else {
+      return { ok: false, message: DUPLICATE_REPORT_MESSAGE };
+    }
+  }
+
   const isResubmission = existing?.status === "NEEDS_REVIEW" && data.statusIntent === "SUBMIT";
   const nextStatus =
     data.statusIntent === "SUBMIT"
@@ -190,89 +225,96 @@ export async function saveReport(session: AppSession, input: unknown): Promise<R
         ? SubmissionStatus.NEEDS_REVIEW
         : SubmissionStatus.DRAFT;
 
-  await prisma.$transaction(async (tx) => {
-    const existingRowById = new Map((existing?.rows ?? []).map((row) => [row.id, row]));
-    const auditAction = isResubmission
-      ? ReportAuditAction.RESUBMITTED
-      : data.reportId && nextStatus === "SUBMITTED" && existing?.status !== "SUBMITTED"
-      ? ReportAuditAction.SUBMITTED
-      : data.reportId
-        ? ReportAuditAction.UPDATED
-        : ReportAuditAction.CREATED;
-    const report = data.reportId
-      ? await tx.salesReport.update({
-          where: { id: data.reportId },
-          data: {
-            memberId: data.memberId,
-            periodId: data.periodId,
-            reportDate: data.reportDate,
-            status: nextStatus,
-            submittedAt: nextStatus === "SUBMITTED" ? new Date() : existing?.submittedAt,
-            reviewedAt: isResubmission ? null : existing?.reviewedAt,
-            reviewerId: isResubmission ? null : existing?.reviewerId
-          }
+  try {
+    await prisma.$transaction(async (tx) => {
+      const existingRowById = new Map((existing?.rows ?? []).map((row) => [row.id, row]));
+      const auditAction = isResubmission
+        ? ReportAuditAction.RESUBMITTED
+        : existing && nextStatus === "SUBMITTED" && existing.status !== "SUBMITTED"
+        ? ReportAuditAction.SUBMITTED
+        : existing
+          ? ReportAuditAction.UPDATED
+          : ReportAuditAction.CREATED;
+      const report = existing
+        ? await tx.salesReport.update({
+            where: { id: existing.id },
+            data: {
+              memberId: data.memberId,
+              periodId: data.periodId,
+              reportDate: data.reportDate,
+              status: nextStatus,
+              submittedAt: nextStatus === "SUBMITTED" ? new Date() : existing.submittedAt,
+              reviewedAt: isResubmission ? null : existing.reviewedAt,
+              reviewerId: isResubmission ? null : existing.reviewerId
+            }
+          })
+        : await tx.salesReport.create({
+            data: {
+              workspaceId: session.workspaceId,
+              memberId: data.memberId,
+              periodId: data.periodId,
+              reportDate: data.reportDate,
+              status: nextStatus,
+              submittedAt: nextStatus === "SUBMITTED" ? new Date() : null
+            }
+          });
+
+      await tx.salesReportRow.deleteMany({ where: { reportId: report.id } });
+      await tx.salesReportRow.createMany({
+        data: data.rows.map((row) => {
+          const existingRow = row.id ? existingRowById.get(row.id) : null;
+          return {
+            reportId: report.id,
+            customer: row.customer,
+            product: row.product,
+            salesAmount: row.salesAmount,
+            unitsSold: row.unitsSold,
+            notes: row.notes || null,
+            rowOrder: row.rowOrder,
+            importBatchId: existingRow?.importBatchId ?? null,
+            importFilename: existingRow?.importFilename ?? null
+          };
         })
-      : await tx.salesReport.create({
-          data: {
+      });
+
+      await tx.reportAuditLog.createMany({
+        data: [
+          {
             workspaceId: session.workspaceId,
-            memberId: data.memberId,
-            periodId: data.periodId,
-            reportDate: data.reportDate,
-            status: nextStatus,
-            submittedAt: nextStatus === "SUBMITTED" ? new Date() : null
-          }
-        });
-
-    await tx.salesReportRow.deleteMany({ where: { reportId: report.id } });
-    await tx.salesReportRow.createMany({
-      data: data.rows.map((row) => {
-        const existingRow = row.id ? existingRowById.get(row.id) : null;
-        return {
-          reportId: report.id,
-          customer: row.customer,
-          product: row.product,
-          salesAmount: row.salesAmount,
-          unitsSold: row.unitsSold,
-          notes: row.notes || null,
-          rowOrder: row.rowOrder,
-          importBatchId: existingRow?.importBatchId ?? null,
-          importFilename: existingRow?.importFilename ?? null
-        };
-      })
+            reportId: report.id,
+            actorId: session.userId,
+            action: auditAction,
+            message:
+              auditAction === ReportAuditAction.RESUBMITTED
+                ? "Report revised and resubmitted for manager review."
+                : auditAction === ReportAuditAction.SUBMITTED
+                ? "Report submitted for manager review."
+                : auditAction === ReportAuditAction.CREATED
+                  ? "Report draft created."
+                  : nextStatus === "NEEDS_REVIEW"
+                    ? "Needs-review report updated."
+                    : "Report draft updated."
+          },
+          ...(!existing && nextStatus === "SUBMITTED"
+            ? [
+                {
+                  workspaceId: session.workspaceId,
+                  reportId: report.id,
+                  actorId: session.userId,
+                  action: ReportAuditAction.SUBMITTED,
+                  message: "Report submitted for manager review."
+                }
+              ]
+            : [])
+        ]
+      });
     });
-
-    await tx.reportAuditLog.createMany({
-      data: [
-        {
-          workspaceId: session.workspaceId,
-          reportId: report.id,
-          actorId: session.userId,
-          action: auditAction,
-          message:
-            auditAction === ReportAuditAction.RESUBMITTED
-              ? "Report revised and resubmitted for manager review."
-              : auditAction === ReportAuditAction.SUBMITTED
-              ? "Report submitted for manager review."
-              : auditAction === ReportAuditAction.CREATED
-                ? "Report draft created."
-                : nextStatus === "NEEDS_REVIEW"
-                  ? "Needs-review report updated."
-                  : "Report draft updated."
-        },
-        ...(!data.reportId && nextStatus === "SUBMITTED"
-          ? [
-              {
-                workspaceId: session.workspaceId,
-                reportId: report.id,
-                actorId: session.userId,
-                action: ReportAuditAction.SUBMITTED,
-                message: "Report submitted for manager review."
-              }
-            ]
-          : [])
-      ]
-    });
-  });
+  } catch (error) {
+    if (isReportUniqueConstraintError(error)) {
+      return { ok: false, message: DUPLICATE_REPORT_MESSAGE };
+    }
+    return { ok: false, message: "Report could not be saved." };
+  }
 
   revalidatePath("/reports");
   revalidatePath("/overview");
@@ -304,6 +346,9 @@ export async function updateReportStatus(
   });
   if (!report) {
     return { ok: false, message: "Report was not found." };
+  }
+  if (report.memberId === session.userId) {
+    return { ok: false, message: "You cannot review your own report." };
   }
 
   if (status !== "APPROVED" && status !== "NEEDS_REVIEW") {

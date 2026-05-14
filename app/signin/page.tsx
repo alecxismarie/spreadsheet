@@ -13,6 +13,7 @@ export default async function SignInPage({
   if (session && (await refreshSession(session))) redirect("/overview");
   const params = await searchParams;
   const resetComplete = params.reset === "success";
+  const workspaceUnavailable = params.workspace === "inactive";
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-canvas px-6 py-12">
@@ -27,6 +28,11 @@ export default async function SignInPage({
         {resetComplete ? (
           <div className="mb-4 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800" data-testid="reset-success-message">
             Password reset complete. Sign in with your new password.
+          </div>
+        ) : null}
+        {workspaceUnavailable ? (
+          <div className="mb-4 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800" data-testid="workspace-unavailable-message">
+            No active workspace is available for this session. Contact your workspace owner.
           </div>
         ) : null}
         <SignInForm />

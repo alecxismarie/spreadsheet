@@ -5,6 +5,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createSession, clearSession } from "@/lib/auth/session";
+import { dbEmailSchema } from "@/lib/domain/db-constraints";
 import {
   clearSignInRateLimit,
   INVALID_SIGN_IN_MESSAGE,
@@ -18,9 +19,11 @@ import {
 import { prisma } from "@/lib/prisma";
 
 const signInSchema = z.object({
-  email: z.string().email(),
+  email: dbEmailSchema(),
   password: z.string().min(1)
 });
+
+const NO_ACTIVE_WORKSPACE_MESSAGE = "No active workspace is available for this account. Contact your workspace owner.";
 
 export type SignInState = {
   error?: string;
@@ -46,7 +49,13 @@ export async function signInAction(_state: SignInState, formData: FormData): Pro
 
   const user = await prisma.user.findUnique({
     where: { email },
-    include: { memberships: { where: { active: true }, orderBy: { createdAt: "asc" } } }
+    include: {
+      memberships: {
+        where: { active: true, workspace: { active: true } },
+        // Until a workspace switcher exists, sign-in uses the earliest active membership deterministically.
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+      }
+    }
   });
 
   if (!user || !(await bcrypt.compare(parsed.data.password, user.passwordHash))) {
@@ -56,8 +65,8 @@ export async function signInAction(_state: SignInState, formData: FormData): Pro
 
   const membership = user.memberships[0];
   if (!membership) {
-    await recordFailedSignIn(email, ip);
-    return { error: INVALID_SIGN_IN_MESSAGE };
+    await clearSignInRateLimit(email, ip);
+    return { error: NO_ACTIVE_WORKSPACE_MESSAGE };
   }
 
   await clearSignInRateLimit(email, ip);

@@ -87,31 +87,41 @@ export async function requireSession() {
   return session;
 }
 
-export async function refreshSession(session: AppSession): Promise<AppSession | null> {
+async function resolveCurrentSession(session: AppSession): Promise<{ session: AppSession; reason?: never } | { session: null; reason: "stale" | "workspace_unavailable" }> {
   const membership = await prisma.membership.findFirst({
     where: {
       userId: session.userId,
-      workspaceId: session.workspaceId,
-      active: true
+      workspaceId: session.workspaceId
     },
     select: {
+      active: true,
       role: true,
+      workspace: { select: { active: true } },
       user: { select: { sessionVersion: true } }
     }
   });
 
-  if (!membership) return null;
-  if (session.sessionVersion !== membership.user.sessionVersion) return null;
-  return { ...session, role: membership.role };
+  if (!membership || !membership.active || !membership.workspace.active) {
+    return { session: null, reason: "workspace_unavailable" };
+  }
+  if (session.sessionVersion !== membership.user.sessionVersion) {
+    return { session: null, reason: "stale" };
+  }
+  return { session: { ...session, role: membership.role } };
+}
+
+export async function refreshSession(session: AppSession): Promise<AppSession | null> {
+  const current = await resolveCurrentSession(session);
+  return current.session;
 }
 
 export async function requireCurrentSession() {
   const session = await requireSession();
-  const currentSession = await refreshSession(session);
-  if (!currentSession) {
-    redirect("/signin");
+  const current = await resolveCurrentSession(session);
+  if (!current.session) {
+    redirect(current.reason === "workspace_unavailable" ? "/signin?workspace=inactive" : "/signin");
   }
-  return currentSession;
+  return current.session;
 }
 
 export async function getCurrentUser() {
@@ -120,7 +130,7 @@ export async function getCurrentUser() {
     where: { id: session.userId },
     include: {
       memberships: {
-        where: { workspaceId: session.workspaceId, active: true },
+        where: { workspaceId: session.workspaceId, active: true, workspace: { active: true } },
         include: { workspace: true }
       }
     }

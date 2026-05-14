@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { createHash, randomBytes } from "crypto";
 import { z } from "zod";
 import { passwordSchema } from "@/lib/auth/password";
+import { dbEmailSchema } from "@/lib/domain/db-constraints";
 import {
   clearPasswordResetTokenRateLimit,
   hashClientIp,
@@ -20,7 +21,7 @@ const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 export const PASSWORD_RESET_GENERIC_MESSAGE = "If an account exists for that email, a reset link has been created/sent.";
 
 const resetRequestSchema = z.object({
-  email: z.string().email("Enter a valid email address.")
+  email: dbEmailSchema("Enter a valid email address.")
 });
 
 const resetPasswordSchema = z

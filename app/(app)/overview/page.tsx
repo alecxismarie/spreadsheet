@@ -4,6 +4,7 @@ import { currency, percent } from "@/lib/domain/format";
 import { parseFilters } from "@/lib/domain/filters";
 import { canViewWorkspaceReports } from "@/lib/auth/permissions";
 import { requireCurrentSession } from "@/lib/auth/session";
+import { targetColumnLabel, targetProgressLabel, usesFullPeriodTargetsForDateRange } from "@/lib/domain/dashboard-targets";
 import { getOverview } from "@/lib/services/overview";
 import { getAccessibleWorkspaceMembers, getPeriods } from "@/lib/services/reporting";
 
@@ -15,6 +16,7 @@ export default async function OverviewPage({
   const session = await requireCurrentSession();
   const filters = parseFilters(await searchParams);
   const canManageAll = canViewWorkspaceReports(session.role);
+  const usesFullPeriodTargets = usesFullPeriodTargetsForDateRange(filters.from, filters.to);
   const [overview, members, periods] = await Promise.all([
     getOverview(session, filters),
     getAccessibleWorkspaceMembers(session),
@@ -35,12 +37,17 @@ export default async function OverviewPage({
         resetHref="/overview"
         showMemberFilter={canManageAll}
       />
+      {usesFullPeriodTargets ? (
+        <p className="text-sm text-muted" data-testid="target-scope-note">
+          Targets use full overlapping reporting periods for selected dates.
+        </p>
+      ) : null}
 
       <section className="grid gap-4 md:grid-cols-6">
         <Kpi label="Official sales" value={currency(overview.totalSales)} />
         <Kpi label="Official units" value={overview.totalUnits.toLocaleString()} />
         <Kpi label="Pending review sales" value={currency(overview.pendingSales)} />
-        <Kpi label="Target progress" value={percent(overview.targetProgress)} tone={overview.targetVariance >= 0 ? "good" : "risk"} />
+        <Kpi label={targetProgressLabel(usesFullPeriodTargets)} value={percent(overview.targetProgress)} tone={overview.targetVariance >= 0 ? "good" : "risk"} />
         <Kpi label="Submission health" value={percent(overview.submissionHealth)} />
         <Kpi label="Needs review" value={overview.reportsNeedingReview.toLocaleString()} tone={overview.reportsNeedingReview ? "risk" : "good"} />
       </section>
@@ -57,7 +64,7 @@ export default async function OverviewPage({
                   <th className="px-5 py-3">Member</th>
                   <th className="px-5 py-3">Official sales</th>
                   <th className="px-5 py-3">Official units</th>
-                  <th className="px-5 py-3">Target</th>
+                  <th className="px-5 py-3">{targetColumnLabel(usesFullPeriodTargets)}</th>
                   <th className="px-5 py-3">Variance</th>
                   <th className="px-5 py-3">Pending review sales</th>
                   <th className="px-5 py-3">Drafts</th>

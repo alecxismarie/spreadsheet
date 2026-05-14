@@ -6,6 +6,7 @@ import { z } from "zod";
 import { passwordSchema } from "@/lib/auth/password";
 import { canManageWorkspace, canViewWorkspaceReports } from "@/lib/auth/permissions";
 import { refreshSession, type AppSession } from "@/lib/auth/session";
+import { dbEmailSchema } from "@/lib/domain/db-constraints";
 import { prisma } from "@/lib/prisma";
 
 const memberSelect = {
@@ -46,7 +47,7 @@ const teamAuditSelect = {
 } satisfies Prisma.TeamAuditLogSelect;
 
 const roleSchema = z.nativeEnum(Role);
-const emailSchema = z.string().trim().email().toLowerCase();
+const emailSchema = dbEmailSchema();
 
 const inviteSchema = z.object({
   email: emailSchema,
@@ -123,6 +124,8 @@ export type TeamManagementData = {
 
 class TeamServiceError extends Error {}
 
+type InvitationCleanupClient = Pick<Prisma.TransactionClient, "workspaceInvitation">;
+
 function fail(message: string, fieldErrors?: TeamActionState["fieldErrors"]): TeamActionState {
   return { ok: false, message, fieldErrors };
 }
@@ -197,6 +200,23 @@ async function incrementUserSessionVersion(tx: Prisma.TransactionClient, userId:
   });
 }
 
+export async function cleanupExpiredPendingInvitations(
+  workspaceId: string,
+  now = new Date(),
+  options: { email?: string; client?: InvitationCleanupClient } = {}
+) {
+  const client = options.client ?? prisma;
+  return client.workspaceInvitation.updateMany({
+    where: {
+      workspaceId,
+      status: InvitationStatus.PENDING,
+      expiresAt: { lte: now },
+      ...(options.email ? { email: options.email } : {})
+    },
+    data: { status: InvitationStatus.EXPIRED }
+  });
+}
+
 export async function getTeamManagementData(session: AppSession): Promise<TeamManagementData> {
   const currentSession = await refreshSession(session);
   if (!currentSession) {
@@ -223,9 +243,11 @@ export async function getTeamManagementData(session: AppSession): Promise<TeamMa
     return { memberships, pendingInvitations: [], auditLogs: [] };
   }
 
+  const now = new Date();
+  await cleanupExpiredPendingInvitations(currentSession.workspaceId, now);
   const [pendingInvitations, auditLogs] = await Promise.all([
     prisma.workspaceInvitation.findMany({
-      where: { workspaceId: currentSession.workspaceId, status: InvitationStatus.PENDING },
+      where: { workspaceId: currentSession.workspaceId, status: InvitationStatus.PENDING, expiresAt: { gt: now } },
       select: inviteSelect,
       orderBy: { createdAt: "desc" }
     }),
@@ -256,10 +278,12 @@ export async function inviteTeamMember(session: AppSession, input: unknown): Pro
   const { email, role } = parsed.data;
   const token = randomBytes(32).toString("base64url");
   const tokenHash = hashInviteToken(token);
-  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7);
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 1000 * 60 * 60 * 24 * 7);
 
   try {
     await prisma.$transaction(async (tx) => {
+      await cleanupExpiredPendingInvitations(currentSession.workspaceId, now, { email, client: tx });
       const existingUser = await tx.user.findUnique({
         where: { email },
         include: {
@@ -278,7 +302,7 @@ export async function inviteTeamMember(session: AppSession, input: unknown): Pro
       }
 
       await tx.workspaceInvitation.updateMany({
-        where: { workspaceId: currentSession.workspaceId, email, status: InvitationStatus.PENDING },
+        where: { workspaceId: currentSession.workspaceId, email, status: InvitationStatus.PENDING, expiresAt: { gt: now } },
         data: { status: InvitationStatus.REVOKED }
       });
 
@@ -320,13 +344,16 @@ export async function getInviteAcceptanceDetails(token: string | undefined, now 
   const invite = await prisma.workspaceInvitation.findUnique({
     where: { tokenHash: hashInviteToken(normalizedToken) },
     select: {
+      id: true,
+      workspaceId: true,
       email: true,
       role: true,
       status: true,
       expiresAt: true,
       workspace: {
         select: {
-          name: true
+          name: true,
+          active: true
         }
       }
     }
@@ -335,6 +362,11 @@ export async function getInviteAcceptanceDetails(token: string | undefined, now 
   if (!invite) {
     return { state: "invalid", message: "This invite link is invalid." };
   }
+  if (!invite.workspace.active) {
+    return { state: "invalid", message: "This invite link is invalid." };
+  }
+
+  await cleanupExpiredPendingInvitations(invite.workspaceId, now);
 
   if (invite.status !== InvitationStatus.PENDING) {
     return {
@@ -380,13 +412,18 @@ export async function acceptWorkspaceInvitation(input: unknown, now = new Date()
   const invite = await prisma.workspaceInvitation.findUnique({
     where: { tokenHash },
     include: {
-      workspace: { select: { name: true } }
+      workspace: { select: { name: true, active: true } }
     }
   });
 
   if (!invite) {
     return inviteFail("This invite link is invalid.");
   }
+  if (!invite.workspace.active) {
+    return inviteFail("This invite link is invalid.");
+  }
+  await cleanupExpiredPendingInvitations(invite.workspaceId, now);
+
   if (invite.status !== InvitationStatus.PENDING) {
     return inviteFail(inviteUnavailableMessage(invite.status));
   }

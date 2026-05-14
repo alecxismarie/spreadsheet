@@ -90,7 +90,7 @@ export function ReportsGrid({
   const ownsSelectedReport = selectedReport?.memberId === session.userId;
   const isNeedsReviewOwner = selectedReport?.status === "NEEDS_REVIEW" && ownsSelectedReport;
   const editable = !selectedReport || selectedReport.status === "DRAFT" || isNeedsReviewOwner;
-  const canReviewSelected = Boolean(canManageAll && selectedReport && selectedReport.status === "SUBMITTED");
+  const canReviewSelected = Boolean(canManageAll && selectedReport && selectedReport.status === "SUBMITTED" && !ownsSelectedReport);
   const defaultMemberId = canManageAll ? members.find((member) => member.role === "MEMBER")?.userId : session.userId;
   const [memberId, setMemberId] = useState(selectedReport?.memberId ?? defaultMemberId ?? session.userId);
   const [periodId, setPeriodId] = useState(selectedReport?.periodId ?? periods[0]?.id ?? "");

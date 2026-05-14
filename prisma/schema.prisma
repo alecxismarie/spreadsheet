@@ -71,6 +71,7 @@ model Workspace {
   id          String            @id @default(cuid())
   name        String
   slug        String            @unique
+  active      Boolean           @default(true)
   memberships Membership[]
   periods     ReportingPeriod[]
   reports     SalesReport[]
@@ -215,6 +216,7 @@ model SalesReport {
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
+  @@unique([workspaceId, memberId, periodId, reportDate])
   @@index([workspaceId, memberId, reportDate])
   @@index([workspaceId, status])
   @@index([periodId])

@@ -15,9 +15,12 @@ const smokeCustomerPrefix = "SMOKE TEST ";
 const rateLimitEmailPrefix = "smoke-rate-limit-";
 const teamMemberEmailPrefix = "smoke-team-member-";
 const teamInviteEmailPrefix = "smoke-team-invite-";
+const workspaceLifecycleEmailPrefix = "smoke-workspace-lifecycle-";
+const workspaceLifecycleSlugPrefix = "smoke-workspace-lifecycle-";
 const passwordResetEmailPrefix = "smoke-reset-user-";
 const invitePassword = "invite1234";
 const passwordResetGenericMessage = "If an account exists for that email, a reset link has been created/sent.";
+const noActiveWorkspaceMessage = "No active workspace is available for this account. Contact your workspace owner.";
 
 test.describe.configure({ mode: "serial" });
 
@@ -41,6 +44,147 @@ test("seeded owner, manager, and member can sign in", async ({ page }) => {
     await expect(page).toHaveURL(/\/overview$/);
     await signOut(page);
   }
+});
+
+test("workspace lifecycle requires an active workspace membership", async ({ page }) => {
+  test.setTimeout(120_000);
+  const suffix = Date.now();
+  const passwordHash = await bcrypt.hash(password, 10);
+  const noWorkspaceEmail = `${workspaceLifecycleEmailPrefix}${suffix}-none@northstar.test`;
+  const inactiveEmail = `${workspaceLifecycleEmailPrefix}${suffix}-inactive@northstar.test`;
+  const activeEmail = `${workspaceLifecycleEmailPrefix}${suffix}-active@northstar.test`;
+  const inactiveWorkspace = await prisma.workspace.create({
+    data: {
+      name: "Smoke Inactive Workspace",
+      slug: `${workspaceLifecycleSlugPrefix}${suffix}-inactive`,
+      active: false
+    }
+  });
+  const activeWorkspace = await prisma.workspace.create({
+    data: {
+      name: "Smoke Active Workspace",
+      slug: `${workspaceLifecycleSlugPrefix}${suffix}-active`,
+      active: true
+    }
+  });
+
+  await prisma.user.create({
+    data: {
+      email: noWorkspaceEmail,
+      name: "Smoke No Workspace",
+      passwordHash
+    }
+  });
+  const inactiveUser = await prisma.user.create({
+    data: {
+      email: inactiveEmail,
+      name: "Smoke Inactive Workspace User",
+      passwordHash
+    }
+  });
+  const activeUser = await prisma.user.create({
+    data: {
+      email: activeEmail,
+      name: "Smoke Active Workspace User",
+      passwordHash
+    }
+  });
+  await prisma.membership.create({
+    data: {
+      userId: inactiveUser.id,
+      workspaceId: inactiveWorkspace.id,
+      role: "OWNER",
+      active: true
+    }
+  });
+  await prisma.membership.create({
+    data: {
+      userId: activeUser.id,
+      workspaceId: activeWorkspace.id,
+      role: "OWNER",
+      active: true
+    }
+  });
+
+  await expectSignInError(page, noWorkspaceEmail, password, noActiveWorkspaceMessage);
+  await expectSignInError(page, inactiveEmail, password, noActiveWorkspaceMessage);
+
+  await signIn(page, activeEmail);
+  await prisma.workspace.update({
+    where: { id: activeWorkspace.id },
+    data: { active: false }
+  });
+  await page.goto("/overview");
+  await expect(page).toHaveURL(/\/signin\?workspace=inactive$/);
+  await expect(page.getByTestId("workspace-unavailable-message")).toContainText(
+    "No active workspace is available for this session."
+  );
+});
+
+test("multi-workspace sign-in selects the earliest active membership deterministically", async ({ page }) => {
+  const suffix = Date.now();
+  const email = `${workspaceLifecycleEmailPrefix}${suffix}-multi@northstar.test`;
+  const passwordHash = await bcrypt.hash(password, 10);
+  const primaryName = `Smoke Primary Workspace ${suffix}`;
+  const secondaryName = `Smoke Secondary Workspace ${suffix}`;
+  const [primaryWorkspace, secondaryWorkspace] = await Promise.all([
+    prisma.workspace.create({
+      data: {
+        name: primaryName,
+        slug: `${workspaceLifecycleSlugPrefix}${suffix}-primary`,
+        active: true
+      }
+    }),
+    prisma.workspace.create({
+      data: {
+        name: secondaryName,
+        slug: `${workspaceLifecycleSlugPrefix}${suffix}-secondary`,
+        active: true
+      }
+    })
+  ]);
+  const user = await prisma.user.create({
+    data: {
+      email,
+      name: "Smoke Multi Workspace User",
+      passwordHash
+    }
+  });
+
+  await prisma.membership.create({
+    data: {
+      userId: user.id,
+      workspaceId: secondaryWorkspace.id,
+      role: "MEMBER",
+      active: true,
+      createdAt: new Date("2026-01-02T00:00:00.000Z")
+    }
+  });
+  await prisma.membership.create({
+    data: {
+      userId: user.id,
+      workspaceId: primaryWorkspace.id,
+      role: "OWNER",
+      active: true,
+      createdAt: new Date("2026-01-01T00:00:00.000Z")
+    }
+  });
+
+  await signIn(page, email);
+  await expect(page.getByRole("heading", { name: primaryName })).toBeVisible();
+  await expect(page.getByText(secondaryName)).toHaveCount(0);
+  await signOut(page);
+});
+
+test("overview labels target comparisons as full-period when date filters are partial", async ({ page }) => {
+  await signIn(page, users.owner);
+  await page.goto("/overview?from=2099-01-01&to=2099-01-15");
+  await expect(page.getByTestId("target-scope-note")).toContainText(
+    "Targets use full overlapping reporting periods for selected dates."
+  );
+  await expect(page.getByText("Target progress (full period)")).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Target (full period)" })).toBeVisible();
+  await signOut(page);
 });
 
 test("failed sign-in attempts are rate limited", async ({ page }) => {
@@ -88,7 +232,25 @@ test("owner manages team lifecycle and non-admins cannot manage users", async ({
     await expect(page.getByTestId("team-action-message")).toContainText(`Invite created for ${inviteEmail}.`);
     await expect(page.getByTestId("team-invite-link")).toContainText("/invite/");
     await waitForPendingInvitation(inviteEmail);
+    const firstInvite = await prisma.workspaceInvitation.findFirstOrThrow({
+      where: { email: inviteEmail, status: "PENDING" },
+      orderBy: { createdAt: "desc" }
+    });
     await expect(page.getByTestId("team-pending-invite").filter({ hasText: inviteEmail })).toBeVisible();
+
+    await page.getByTestId("team-invite-email").fill(inviteEmail);
+    await page.getByTestId("team-invite-role").selectOption("MEMBER");
+    await page.getByTestId("team-invite-submit").click();
+    await expect(page.getByTestId("team-action-message")).toContainText(`Invite created for ${inviteEmail}.`);
+    await expectInvitationStatus(firstInvite.id, "REVOKED");
+    await expect
+      .poll(() =>
+        prisma.workspaceInvitation.count({
+          where: { email: inviteEmail, status: "PENDING", expiresAt: { gt: new Date() } }
+        })
+      )
+      .toBe(1);
+    await expect(page.getByTestId("team-pending-invite").filter({ hasText: inviteEmail })).toHaveCount(1);
 
     await page.getByTestId(`team-role-select-${managedMembership.id}`).selectOption("MANAGER");
     await page.getByTestId(`team-role-submit-${managedMembership.id}`).click();
@@ -110,12 +272,15 @@ test("owner manages team lifecycle and non-admins cannot manage users", async ({
     await expect(page.getByTestId(`team-member-row-${managedUser.id}`)).toContainText("Deactivated");
 
     await memberPage.goto("/overview");
-    await expect(memberPage).toHaveURL(/\/signin$/);
+    await expect(memberPage).toHaveURL(/\/signin\?workspace=inactive$/);
+    await expect(memberPage.getByTestId("workspace-unavailable-message")).toContainText(
+      "No active workspace is available for this session."
+    );
     await memberPage.goto("/signin");
     await memberPage.getByTestId("sign-in-email").fill(managedEmail);
     await memberPage.getByTestId("sign-in-password").fill(password);
     await memberPage.getByTestId("sign-in-submit").click();
-    await expect(memberPage.getByText("Invalid email or password.")).toBeVisible();
+    await expect(memberPage.getByText(noActiveWorkspaceMessage)).toBeVisible();
 
     await page.getByTestId(`team-reactivate-${managedMembership.id}`).click();
     await expect(page.getByTestId("team-action-message")).toContainText("Member reactivated.");
@@ -132,7 +297,7 @@ test("owner manages team lifecycle and non-admins cannot manage users", async ({
     await expect(page.getByTestId("team-action-message")).toContainText("Cannot remove the last active owner from the workspace.");
     await waitForMembership(users.owner, "OWNER", true);
 
-    await expectTeamAuditCount([managedEmail, inviteEmail], 3);
+    await expectTeamAuditCount([managedEmail, inviteEmail], 5);
     await signOut(page);
   } finally {
     await memberContext.close();
@@ -217,6 +382,7 @@ test("invite acceptance handles existing users and rejects unavailable invites",
   });
   await page.goto(`/invite/${expiredInvite.token}`);
   await expect(page.getByTestId("invite-state-message")).toContainText("This invite has expired.");
+  await expectInvitationStatus(expiredInvite.inviteId, "EXPIRED");
 
   const revokedInvite = await createWorkspaceInvite(`${teamInviteEmailPrefix}${suffix}-revoked@northstar.test`, "MEMBER", {
     status: "REVOKED"
@@ -226,6 +392,23 @@ test("invite acceptance handles existing users and rejects unavailable invites",
 
   await page.goto(`/invite/${randomBytes(32).toString("base64url")}`);
   await expect(page.getByTestId("invite-state-message")).toContainText("This invite link is invalid.");
+});
+
+test("team pending invites expire stale rows and keep only current invites visible", async ({ page }) => {
+  const suffix = Date.now();
+  const expiredEmail = `${teamInviteEmailPrefix}${suffix}-stale@northstar.test`;
+  const activeEmail = `${teamInviteEmailPrefix}${suffix}-current@northstar.test`;
+  const expiredInvite = await createWorkspaceInvite(expiredEmail, "MEMBER", {
+    expiresAt: new Date(Date.now() - 60_000)
+  });
+  await createWorkspaceInvite(activeEmail, "MANAGER");
+
+  await signIn(page, users.owner);
+  await page.goto("/team");
+  await expectInvitationStatus(expiredInvite.inviteId, "EXPIRED");
+  await expect(page.getByTestId("team-pending-invite").filter({ hasText: expiredEmail })).toHaveCount(0);
+  await expect(page.getByTestId("team-pending-invite").filter({ hasText: activeEmail })).toHaveCount(1);
+  await signOut(page);
 });
 
 test("password reset request and completion are generic, single-use, and invalidate old sessions", async ({ page }) => {
@@ -357,12 +540,13 @@ test("member report lifecycle, manager review, approval, and CSV import smoke", 
   const firstImportCsv = `Customer,Product,Sales Amount,Units Sold,Notes\n${importCustomer},Import Plan,99.50,2,Imported by smoke test`;
   await importCsvAsDraft(page, "smoke-import.csv", firstImportCsv, importDate);
   await expect(page.getByText("Imported 1 row into a draft report.")).toBeVisible();
-  await waitForReportByCustomer(importCustomer, "DRAFT");
+  const importDraft = await waitForReportByCustomer(importCustomer, "DRAFT");
   await expectReportRowCount(importCustomer, 1);
 
   await importCsvAsDraft(page, "smoke-import.csv", firstImportCsv, importDate);
   await expect(page.getByText("Imported 0 rows into a draft report. Skipped 1 duplicate row.")).toBeVisible();
   await expect(page.getByText("Imported rows: 0. Skipped duplicates: 1.")).toBeVisible();
+  await expectReportCountForKey(importDraft.id, 1);
   await expectReportRowCount(importCustomer, 1);
 
   const duplicateBatchCustomer = `${runPrefix}Batch Duplicate`;
@@ -461,6 +645,76 @@ test("legacy xls files are rejected cleanly", async ({ page }) => {
   await expect(page.getByText("Legacy .xls files are no longer supported.")).toBeVisible();
 });
 
+test("report uniqueness reuses draft reports and blocks submitted or approved duplicates", async ({ page }) => {
+  test.setTimeout(120_000);
+  const suffix = Date.now();
+  const draftDate = futureDate(suffix, 1);
+  const submittedDate = futureDate(suffix, 2);
+  const draft = await createSmokeReportForEmail(users.member, "DRAFT", draftDate, `${smokeCustomerPrefix}${suffix} Existing Draft`);
+  const replacementCustomer = `${smokeCustomerPrefix}${suffix} Draft Replacement`;
+
+  await signIn(page, users.member);
+  await attemptManualReport(page, draft.period.id, draftDate, replacementCustomer);
+  await expect(page.getByText("Changes saved.")).toBeVisible();
+  await expectReportCountForKey(draft.report.id, 1);
+  await expect.poll(() => prisma.salesReportRow.count({ where: { reportId: draft.report.id, customer: replacementCustomer } })).toBe(1);
+
+  const submitted = await createSmokeReportForEmail(users.member, "SUBMITTED", submittedDate, `${smokeCustomerPrefix}${suffix} Submitted Original`);
+  await attemptManualReport(page, submitted.period.id, submittedDate, `${smokeCustomerPrefix}${suffix} Submitted Duplicate`);
+  await expect(page.getByText("A report already exists for this member, period, and date.")).toBeVisible();
+  await expectReportCountForKey(submitted.report.id, 1);
+  await signOut(page);
+
+  await signIn(page, users.manager);
+  await page.goto("/reports");
+  await page.getByTestId(`report-list-item-${submitted.report.id}`).click();
+  await page.getByTestId("review-approve").click();
+  await waitForReportStatus(submitted.report.id, "APPROVED");
+  await signOut(page);
+
+  await signIn(page, users.member);
+  await attemptManualReport(page, submitted.period.id, submittedDate, `${smokeCustomerPrefix}${suffix} Approved Duplicate`);
+  await expect(page.getByText("A report already exists for this member, period, and date.")).toBeVisible();
+  await expectReportCountForKey(submitted.report.id, 1);
+});
+
+test("review governance blocks self-approval and preserves manager review for other members", async ({ page }) => {
+  test.setTimeout(120_000);
+  const suffix = Date.now();
+  const managerReport = await createSmokeReportForEmail(users.manager, "SUBMITTED", futureDate(suffix, 3), `${smokeCustomerPrefix}${suffix} Manager Own`);
+  const memberReport = await createSmokeReportForEmail(users.member, "SUBMITTED", futureDate(suffix, 4), `${smokeCustomerPrefix}${suffix} Member Other`);
+
+  await signIn(page, users.manager);
+  await page.goto("/reports");
+  await page.getByTestId(`report-list-item-${managerReport.report.id}`).click();
+  await expect(page.getByTestId("review-approve")).toHaveCount(0);
+  await expect(page.getByTestId("review-needs-review")).toHaveCount(0);
+
+  await page.getByTestId(`report-list-item-${memberReport.report.id}`).click();
+  await expect(page.getByTestId("review-approve")).toBeVisible();
+  const reviewForm = page.locator("form").filter({ has: page.getByTestId("review-approve") });
+  await reviewForm.locator('input[name="reportId"]').evaluate((input, reportId) => {
+    (input as HTMLInputElement).value = reportId;
+  }, managerReport.report.id);
+  await page.getByTestId("review-approve").click();
+  await expect(page.getByText("You cannot review your own report.")).toBeVisible();
+  await waitForReportStatus(managerReport.report.id, "SUBMITTED");
+  await expect.poll(() => prisma.reportAuditLog.count({ where: { reportId: managerReport.report.id, action: "APPROVED" } })).toBe(0);
+  await expectReviewCommentCount(managerReport.report.id, 0);
+
+  await page.goto("/reports");
+  await page.getByTestId(`report-list-item-${memberReport.report.id}`).click();
+  await page.getByTestId("review-approve").click();
+  await waitForReportStatus(memberReport.report.id, "APPROVED");
+  await signOut(page);
+
+  await signIn(page, users.member);
+  await page.goto("/reports");
+  await page.getByTestId(`report-list-item-${memberReport.report.id}`).click();
+  await expect(page.getByTestId("review-approve")).toHaveCount(0);
+  await expect(page.getByTestId("review-needs-review")).toHaveCount(0);
+});
+
 async function signIn(page: Page, email: string) {
   await signInWithPassword(page, email, password);
 }
@@ -474,11 +728,15 @@ async function signInWithPassword(page: Page, email: string, signInPassword: str
 }
 
 async function expectSignInFails(page: Page, email: string, signInPassword: string) {
+  await expectSignInError(page, email, signInPassword, "Invalid email or password.");
+}
+
+async function expectSignInError(page: Page, email: string, signInPassword: string, message: string) {
   await page.goto("/signin");
   await page.getByTestId("sign-in-email").fill(email);
   await page.getByTestId("sign-in-password").fill(signInPassword);
   await page.getByTestId("sign-in-submit").click();
-  await expect(page.getByText("Invalid email or password.")).toBeVisible();
+  await expect(page.getByText(message)).toBeVisible();
 }
 
 async function signOut(page: Page) {
@@ -499,6 +757,18 @@ async function importCsvAsDraft(page: Page, filename: string, csv: string, repor
   await expect(page.getByText(`Parsed ${parsedRows} row${parsedRows === 1 ? "" : "s"}.`, { exact: true })).toBeVisible();
   await page.getByTestId("import-date-input").fill(reportDate);
   await page.getByTestId("import-submit").click();
+}
+
+async function attemptManualReport(page: Page, periodId: string, reportDate: string, customer: string) {
+  await page.goto("/reports");
+  await startNewReport(page);
+  await page.getByTestId("report-period-select").selectOption(periodId);
+  await page.getByTestId("report-date-input").fill(reportDate);
+  await page.getByTestId("report-row-customer-0").fill(customer);
+  await page.getByTestId("report-row-product-0").fill("Integrity Plan");
+  await page.getByTestId("report-row-sales-0").fill("250.00");
+  await page.getByTestId("report-row-units-0").fill("2");
+  await page.getByTestId("report-save-draft").click();
 }
 
 async function startNewReport(page: Page) {
@@ -565,6 +835,22 @@ async function expectReviewCommentCount(reportId: string, count: number) {
   await expect.poll(() => prisma.reportReviewComment.count({ where: { reportId } })).toBe(count);
 }
 
+async function expectReportCountForKey(reportId: string, count: number) {
+  const report = await prisma.salesReport.findUniqueOrThrow({ where: { id: reportId } });
+  await expect
+    .poll(() =>
+      prisma.salesReport.count({
+        where: {
+          workspaceId: report.workspaceId,
+          memberId: report.memberId,
+          periodId: report.periodId,
+          reportDate: report.reportDate
+        }
+      })
+    )
+    .toBe(count);
+}
+
 async function waitForRateLimitAttempts(email: string, attempts: number) {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const record = await prisma.authRateLimit.findFirst({ where: { email } });
@@ -598,6 +884,40 @@ async function createSmokeTeamMember(email: string, memberPassword = password) {
   });
 
   return { user, membership };
+}
+
+async function createSmokeReportForEmail(email: string, status: SubmissionStatus, reportDateInput: string, customer: string) {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "northstar-sales" } });
+  const [user, period] = await Promise.all([
+    prisma.user.findUniqueOrThrow({ where: { email } }),
+    prisma.reportingPeriod.findFirstOrThrow({
+      where: { workspaceId: workspace.id, type: "MONTHLY" },
+      orderBy: { startDate: "desc" }
+    })
+  ]);
+  const reportDate = dateFromInput(reportDateInput);
+  const report = await prisma.salesReport.create({
+    data: {
+      workspaceId: workspace.id,
+      memberId: user.id,
+      periodId: period.id,
+      reportDate,
+      status,
+      submittedAt: status === "DRAFT" ? null : reportDate,
+      reviewedAt: status === "APPROVED" ? reportDate : null,
+      rows: {
+        create: {
+          customer,
+          product: "Integrity Plan",
+          salesAmount: 250,
+          unitsSold: 2,
+          rowOrder: 0
+        }
+      }
+    }
+  });
+
+  return { report, period, user };
 }
 
 async function getMembershipByEmail(email: string) {
@@ -659,6 +979,15 @@ async function expectTeamAuditAction(email: string, action: TeamAuditAction) {
     .toBeGreaterThanOrEqual(1);
 }
 
+async function expectInvitationStatus(inviteId: string, status: "PENDING" | "ACCEPTED" | "EXPIRED" | "REVOKED") {
+  await expect
+    .poll(async () => {
+      const invite = await prisma.workspaceInvitation.findUniqueOrThrow({ where: { id: inviteId } });
+      return invite.status;
+    })
+    .toBe(status);
+}
+
 async function createWorkspaceInvite(
   email: string,
   role: "OWNER" | "MANAGER" | "MEMBER",
@@ -701,6 +1030,15 @@ function tokenFromResetHref(href: string) {
   const token = url.pathname.split("/").pop();
   if (!token) throw new Error(`Could not read reset token from ${href}.`);
   return token;
+}
+
+function futureDate(seed: number, offset: number) {
+  const day = ((seed + offset) % 20) + 1;
+  return `2099-02-${String(day).padStart(2, "0")}`;
+}
+
+function dateFromInput(value: string) {
+  return new Date(`${value}T00:00:00.000`);
 }
 
 async function waitForPasswordResetToken(email: string) {
@@ -760,12 +1098,19 @@ async function cleanupSmokeData() {
     }
   });
 
+  await prisma.workspace.deleteMany({
+    where: {
+      slug: { startsWith: workspaceLifecycleSlugPrefix }
+    }
+  });
+
   await prisma.authRateLimit.deleteMany({
     where: {
       OR: [
         { email: { startsWith: rateLimitEmailPrefix } },
         { email: { startsWith: teamMemberEmailPrefix } },
         { email: { startsWith: teamInviteEmailPrefix } },
+        { email: { startsWith: workspaceLifecycleEmailPrefix } },
         { email: { startsWith: passwordResetEmailPrefix } },
         { email: "password-reset-token" }
       ]
@@ -777,6 +1122,7 @@ async function cleanupSmokeData() {
       OR: [
         { email: { startsWith: teamMemberEmailPrefix } },
         { email: { startsWith: teamInviteEmailPrefix } },
+        { email: { startsWith: workspaceLifecycleEmailPrefix } },
         { email: { startsWith: passwordResetEmailPrefix } }
       ]
     }
@@ -787,6 +1133,7 @@ async function cleanupSmokeData() {
       OR: [
         { targetEmail: { startsWith: teamMemberEmailPrefix } },
         { targetEmail: { startsWith: teamInviteEmailPrefix } },
+        { targetEmail: { startsWith: workspaceLifecycleEmailPrefix } },
         { targetEmail: { startsWith: passwordResetEmailPrefix } }
       ]
     }
@@ -797,6 +1144,7 @@ async function cleanupSmokeData() {
       OR: [
         { email: { startsWith: teamMemberEmailPrefix } },
         { email: { startsWith: teamInviteEmailPrefix } },
+        { email: { startsWith: workspaceLifecycleEmailPrefix } },
         { email: { startsWith: passwordResetEmailPrefix } }
       ]
     }

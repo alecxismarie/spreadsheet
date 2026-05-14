@@ -5,7 +5,13 @@ import Papa from "papaparse";
 import { readSheet } from "read-excel-file/universal";
 import { canAccessMember } from "@/lib/auth/permissions";
 import { refreshSession, type AppSession } from "@/lib/auth/session";
-import { endOfDateFilter, startOfDateFilter } from "@/lib/domain/date-range";
+import { canonicalReportDate } from "@/lib/domain/date-range";
+import {
+  DB_STRING_LIMITS,
+  parseDecimal12_2,
+  parseNonNegativeMysqlInt
+} from "@/lib/domain/db-constraints";
+import { DUPLICATE_REPORT_MESSAGE, isReportUniqueConstraintError } from "@/lib/domain/report-uniqueness";
 import { prisma } from "@/lib/prisma";
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -33,11 +39,12 @@ type ParsedImportInput = {
   ok: true;
   memberId: string;
   periodId: string;
-  reportDate: string;
+  reportDate: Date;
   filename: string;
   rows: ParsedRow[];
   mapping: Required<Pick<ImportMapping, "customer" | "product" | "salesAmount" | "unitsSold">> & ImportMapping;
 };
+
 
 export type ImportPreviewState = {
   ok: boolean;
@@ -162,73 +169,83 @@ export async function importRowsAsDraft(session: AppSession, input: unknown): Pr
     };
   }
 
-  const from = startOfDateFilter(reportDate);
-  const to = endOfDateFilter(reportDate);
-  if (!from || !to) {
-    return { ok: false, message: "Report date is invalid." };
-  }
-
-  const importResult = await prisma.$transaction(async (tx) => {
-    const importBatchId = randomUUID();
-    const existingDraft = await tx.salesReport.findFirst({
-      where: {
-        workspaceId: session.workspaceId,
-        memberId,
-        periodId,
-        status: SubmissionStatus.DRAFT,
-        reportDate: { gte: from, lte: to }
-      },
-      include: { rows: { orderBy: { rowOrder: "desc" } } },
-      orderBy: { updatedAt: "desc" }
-    });
-    const deduplicated = removeDuplicateRows(validated.validRows, existingDraft?.rows ?? []);
-
-    const draft =
-      existingDraft ??
-      (await tx.salesReport.create({
-        data: {
+  let importResult: {
+    report: { id: string };
+    importedRows: number;
+    skippedDuplicates: number;
+  };
+  try {
+    importResult = await prisma.$transaction(async (tx) => {
+      const importBatchId = randomUUID();
+      const existingReport = await tx.salesReport.findFirst({
+        where: {
           workspaceId: session.workspaceId,
           memberId,
           periodId,
-          reportDate: from,
-          status: SubmissionStatus.DRAFT
+          reportDate
         },
-        include: { rows: true }
-      }));
-
-    const startingOrder = existingDraft?.rows[0]?.rowOrder != null ? existingDraft.rows[0].rowOrder + 1 : 0;
-    if (deduplicated.rowsToImport.length > 0) {
-      await tx.salesReportRow.createMany({
-        data: deduplicated.rowsToImport.map((row, index) => ({
-          reportId: draft.id,
-          customer: row.customer,
-          product: row.product,
-          salesAmount: row.salesAmount,
-          unitsSold: row.unitsSold,
-          notes: row.notes || null,
-          rowOrder: startingOrder + index,
-          importBatchId,
-          importFilename: filename
-        }))
+        include: { rows: { orderBy: { rowOrder: "desc" } } },
+        orderBy: { updatedAt: "desc" }
       });
-    }
 
-    await tx.reportAuditLog.create({
-      data: {
-        workspaceId: session.workspaceId,
-        reportId: draft.id,
-        actorId: session.userId,
-        action: ReportAuditAction.IMPORTED,
-        message: importAuditMessage(filename, deduplicated.rowsToImport.length, deduplicated.skippedDuplicates)
+      if (existingReport && existingReport.status !== SubmissionStatus.DRAFT) {
+        throw new DuplicateReportError();
       }
-    });
 
-    return {
-      report: draft,
-      importedRows: deduplicated.rowsToImport.length,
-      skippedDuplicates: deduplicated.skippedDuplicates
-    };
-  });
+      const deduplicated = removeDuplicateRows(validated.validRows, existingReport?.rows ?? []);
+
+      const draft =
+        existingReport ??
+        (await tx.salesReport.create({
+          data: {
+            workspaceId: session.workspaceId,
+            memberId,
+            periodId,
+            reportDate,
+            status: SubmissionStatus.DRAFT
+          },
+          include: { rows: true }
+        }));
+
+      const startingOrder = existingReport?.rows[0]?.rowOrder != null ? existingReport.rows[0].rowOrder + 1 : 0;
+      if (deduplicated.rowsToImport.length > 0) {
+        await tx.salesReportRow.createMany({
+          data: deduplicated.rowsToImport.map((row, index) => ({
+            reportId: draft.id,
+            customer: row.customer,
+            product: row.product,
+            salesAmount: row.salesAmount,
+            unitsSold: row.unitsSold,
+            notes: row.notes || null,
+            rowOrder: startingOrder + index,
+            importBatchId,
+            importFilename: filename
+          }))
+        });
+      }
+
+      await tx.reportAuditLog.create({
+        data: {
+          workspaceId: session.workspaceId,
+          reportId: draft.id,
+          actorId: session.userId,
+          action: ReportAuditAction.IMPORTED,
+          message: importAuditMessage(filename, deduplicated.rowsToImport.length, deduplicated.skippedDuplicates)
+        }
+      });
+
+      return {
+        report: draft,
+        importedRows: deduplicated.rowsToImport.length,
+        skippedDuplicates: deduplicated.skippedDuplicates
+      };
+    });
+  } catch (error) {
+    if (error instanceof DuplicateReportError || isReportUniqueConstraintError(error)) {
+      return { ok: false, message: DUPLICATE_REPORT_MESSAGE };
+    }
+    return { ok: false, message: "Rows could not be imported." };
+  }
 
   revalidatePath("/reports");
   revalidatePath("/overview");
@@ -390,12 +407,14 @@ function parseImportInput(input: unknown):
   const columns = new Set(rows.flatMap((row) => Object.keys(row)));
   const invalidMapping = Object.values(normalizedMapping).filter((column) => column && !columns.has(column));
   if (invalidMapping.length > 0) return { ok: false, message: "One or more mapped columns were not found in the parsed file." };
+  const reportDate = canonicalReportDate(data.reportDate);
+  if (!reportDate) return { ok: false, message: "Report date must be a valid YYYY-MM-DD date." };
 
   return {
     ok: true,
     memberId: data.memberId,
     periodId: data.periodId,
-    reportDate: data.reportDate,
+    reportDate,
     filename: data.filename,
     rows,
     mapping: normalizedMapping as Required<Pick<ImportMapping, "customer" | "product" | "salesAmount" | "unitsSold">> & ImportMapping
@@ -422,18 +441,23 @@ function validateMappedRows(rows: ParsedRow[], mapping: Required<Pick<ImportMapp
     const salesAmount = parseMoney(salesAmountRaw);
     const unitsSold = parseInteger(unitsSoldRaw);
     if (!customer) errors.push("Missing customer");
+    else if (customer.length > DB_STRING_LIMITS.reportCustomer) {
+      errors.push(`Customer must be ${DB_STRING_LIMITS.reportCustomer} characters or fewer`);
+    }
     if (!product) errors.push("Missing product");
-    if (salesAmount == null) errors.push("Invalid sales amount");
-    else if (salesAmount < 0) errors.push("Negative sales amount");
-    if (unitsSold == null) errors.push("Invalid units sold");
-    else if (unitsSold < 0) errors.push("Negative units sold");
+    else if (product.length > DB_STRING_LIMITS.reportProduct) {
+      errors.push(`Product must be ${DB_STRING_LIMITS.reportProduct} characters or fewer`);
+    }
+    if (!salesAmount.ok) errors.push(salesAmount.message);
+    if (!unitsSold.ok) errors.push(unitsSold.message);
 
     if (errors.length > 0) {
       rowErrors.push({ rowNumber: index + 2, errors });
       return;
     }
 
-    validRows.push({ customer, product, salesAmount: salesAmount!, unitsSold: unitsSold!, notes });
+    if (!salesAmount.ok || !unitsSold.ok) return;
+    validRows.push({ customer, product, salesAmount: salesAmount.value, unitsSold: unitsSold.value, notes });
   });
 
   return { validRows, rowErrors, ignoredEmptyRows };
@@ -551,16 +575,15 @@ function sanitize(value: unknown) {
 }
 
 function parseMoney(value: string) {
-  if (!value) return null;
+  if (!value) return { ok: false as const, message: "Invalid sales amount" };
   const normalized = value.replace(/[$,\s]/g, "");
-  const amount = Number(normalized);
-  return Number.isFinite(amount) ? amount : null;
+  return parseDecimal12_2(normalized, "Sales amount");
 }
 
 function parseInteger(value: string) {
-  if (!value) return null;
+  if (!value) return { ok: false as const, message: "Invalid units sold" };
   const normalized = value.replace(/[,\s]/g, "");
-  if (!/^-?\d+$/.test(normalized)) return null;
-  const amount = Number(normalized);
-  return Number.isSafeInteger(amount) ? amount : null;
+  return parseNonNegativeMysqlInt(normalized, "Units sold");
 }
+
+class DuplicateReportError extends Error {}
