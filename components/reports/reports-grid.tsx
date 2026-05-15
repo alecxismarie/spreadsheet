@@ -175,8 +175,8 @@ export function ReportsGrid({
   }
 
   return (
-    <section className="grid gap-5 xl:grid-cols-[280px_1fr]">
-      <aside className="rounded-lg border border-border bg-white shadow-subtle">
+    <section className="grid min-w-0 items-start gap-5 xl:grid-cols-[240px_minmax(0,1fr)] 2xl:grid-cols-[260px_minmax(0,1fr)]">
+      <aside className="min-w-0 overflow-hidden rounded-lg border border-border bg-white shadow-subtle">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <h2 className="font-semibold text-ink">Reports</h2>
           <button
@@ -212,21 +212,21 @@ export function ReportsGrid({
         </div>
       </aside>
 
-      <div className="space-y-4">
-      <form action={action} className="rounded-lg border border-border bg-white shadow-subtle">
+      <div className="min-w-0 space-y-4">
+      <form action={action} className="min-w-0 overflow-hidden rounded-lg border border-border bg-white shadow-subtle">
         <input type="hidden" name="reportId" value={selectedReport?.id ?? ""} />
         <input type="hidden" name="rows" value={JSON.stringify(rows.map((row, index) => ({ ...row, rowOrder: index })))} />
         <input type="hidden" name="statusIntent" value={intent} />
         {!canManageAll ? <input type="hidden" name="memberId" value={memberId} /> : null}
 
-        <div className="grid gap-3 border-b border-border p-4 md:grid-cols-4">
+        <div className="grid min-w-0 gap-3 border-b border-border p-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_150px_minmax(0,auto)]">
           <select
             name="memberId"
             value={memberId}
             onChange={(event) => setMemberId(event.target.value)}
             disabled={!canManageAll}
             data-testid="report-member-select"
-            className="rounded-md border border-border px-3 py-2 text-sm disabled:bg-slate-50"
+            className="min-w-0 rounded-md border border-border px-3 py-2 text-sm disabled:bg-slate-50"
           >
             {members.map((membership) => (
               <option key={membership.userId} value={membership.userId}>
@@ -239,7 +239,7 @@ export function ReportsGrid({
             value={periodId}
             onChange={(event) => setPeriodId(event.target.value)}
             data-testid="report-period-select"
-            className="rounded-md border border-border px-3 py-2 text-sm"
+            className="min-w-0 rounded-md border border-border px-3 py-2 text-sm"
           >
             {periods.map((period) => (
               <option key={period.id} value={period.id}>
@@ -253,9 +253,9 @@ export function ReportsGrid({
             value={reportDate}
             onChange={(event) => setReportDate(event.target.value)}
             data-testid="report-date-input"
-            className="rounded-md border border-border px-3 py-2 text-sm"
+            className="min-w-0 rounded-md border border-border px-3 py-2 text-sm"
           />
-          <div className="flex items-center justify-end gap-2 text-sm">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm md:justify-end">
             <span className="text-muted">Total</span>
             <strong>{currency(totals.sales)}</strong>
             <span className="text-muted">{totals.units} units</span>
@@ -264,8 +264,8 @@ export function ReportsGrid({
 
         {selectedReport ? <ReportNotice report={selectedReport} editable={editable} /> : null}
 
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] text-left text-sm">
+        <div className="max-w-full overflow-x-auto">
+          <table className="w-full min-w-[820px] text-left text-sm">
             <thead className="bg-slate-50 text-xs uppercase tracking-wide text-muted">
               <tr>
                 <th className="w-12 px-3 py-3">#</th>
@@ -336,7 +336,7 @@ export function ReportsGrid({
             <Plus className="h-4 w-4" />
             Add row
           </button>
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-3">
             {state.message ? <p className={state.ok ? "text-sm text-success" : "text-sm text-danger"}>{state.message}</p> : null}
             <button
               type="submit"

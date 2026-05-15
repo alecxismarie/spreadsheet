@@ -24,7 +24,7 @@ export default async function OverviewPage({
   ]);
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-[1500px] space-y-5">
       <div className="flex flex-col gap-2">
         <p className="text-sm font-medium uppercase tracking-[0.18em] text-muted">Overview</p>
         <h1 className="text-2xl font-semibold text-ink">Sales reporting command center</h1>
@@ -43,7 +43,7 @@ export default async function OverviewPage({
         </p>
       ) : null}
 
-      <section className="grid gap-4 md:grid-cols-6">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         <Kpi label="Official sales" value={currency(overview.totalSales)} />
         <Kpi label="Official units" value={overview.totalUnits.toLocaleString()} />
         <Kpi label="Pending review sales" value={currency(overview.pendingSales)} />
@@ -52,13 +52,13 @@ export default async function OverviewPage({
         <Kpi label="Needs review" value={overview.reportsNeedingReview.toLocaleString()} tone={overview.reportsNeedingReview ? "risk" : "good"} />
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1.4fr_0.8fr]">
-        <div className="rounded-lg border border-border bg-white shadow-subtle">
+      <section className="grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_280px] 2xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-white shadow-subtle">
           <div className="border-b border-border px-5 py-4">
             <h2 className="font-semibold text-ink">Official team performance</h2>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] text-left text-sm">
+          <div className="max-w-full overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-muted">
                 <tr>
                   <th className="px-5 py-3">Member</th>
@@ -89,12 +89,12 @@ export default async function OverviewPage({
           </div>
         </div>
 
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-5">
           <section className="rounded-lg border border-border bg-white p-5 shadow-subtle">
             <h2 className="font-semibold text-ink">Deterministic insights</h2>
-            <ul className="mt-4 space-y-3">
+            <ul className="mt-4 space-y-2.5">
               {overview.insights.map((insight) => (
-                <li key={insight} className="rounded-md border border-border bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">
+                <li key={insight} className="rounded-md border border-border bg-slate-50 px-3 py-2 text-sm font-medium leading-5 text-slate-700">
                   {insight}
                 </li>
               ))}
@@ -125,9 +125,9 @@ export default async function OverviewPage({
 
 function Kpi({ label, value, tone }: { label: string; value: string; tone?: "good" | "risk" }) {
   return (
-    <div className="rounded-lg border border-border bg-white p-5 shadow-subtle">
+    <div className="min-w-0 rounded-lg border border-border bg-white p-4 shadow-subtle">
       <p className="text-sm text-muted">{label}</p>
-      <p className={`mt-2 text-2xl font-semibold ${tone === "good" ? "text-success" : tone === "risk" ? "text-danger" : "text-ink"}`}>
+      <p className={`mt-2 truncate text-2xl font-semibold ${tone === "good" ? "text-success" : tone === "risk" ? "text-danger" : "text-ink"}`}>
         {value}
       </p>
     </div>
