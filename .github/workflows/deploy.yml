@@ -17,6 +17,8 @@ env:
   SERVICE: workspace-app
   REPOSITORY: workspace
   IMAGE: workspace-app
+  MIN_INSTANCES: "1"
+  MAX_INSTANCES: "10"
   INSTANCE_CONNECTION_NAME: workspace-app-496306:asia-southeast1:workspace-mysql
   RUNTIME_SERVICE_ACCOUNT: workspace-app-runner@workspace-app-496306.iam.gserviceaccount.com
   NEXT_PUBLIC_APP_URL: https://workspace.lexora.ltd
@@ -62,6 +64,10 @@ jobs:
       - name: Deploy to Cloud Run
         id: deploy
         run: |
+          PREVIOUS_REVISION="$(gcloud run services describe "${SERVICE}" \
+            --region "${REGION}" \
+            --format 'value(status.traffic[0].revisionName)')"
+
           gcloud run deploy "${SERVICE}" \
             --image "${IMAGE_URI}" \
             --region "${REGION}" \
@@ -69,7 +75,8 @@ jobs:
             --allow-unauthenticated \
             --port 8080 \
             --execution-environment gen2 \
-            --max-instances 3 \
+            --min-instances "${MIN_INSTANCES}" \
+            --max-instances "${MAX_INSTANCES}" \
             --service-account "${RUNTIME_SERVICE_ACCOUNT}" \
             --add-cloudsql-instances "${INSTANCE_CONNECTION_NAME}" \
             --set-env-vars "NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}" \
@@ -84,12 +91,23 @@ jobs:
             --region "${REGION}" \
             --format 'value(status.traffic[?tag="candidate"].url)')"
 
+          echo "previous_revision=${PREVIOUS_REVISION}" >> "${GITHUB_OUTPUT}"
           echo "revision=${REVISION}" >> "${GITHUB_OUTPUT}"
           echo "candidate_url=${CANDIDATE_URL}" >> "${GITHUB_OUTPUT}"
 
       - name: Smoke test candidate
         run: |
-          curl --fail --silent --show-error --location "${{ steps.deploy.outputs.candidate_url }}/signin" > /dev/null
+          for attempt in {1..12}; do
+            status="$(curl --silent --show-error --location --output /tmp/workspace-smoke.html --write-out "%{http_code}" "${{ steps.deploy.outputs.candidate_url }}/signin" || true)"
+            if [ "${status}" = "200" ]; then
+              exit 0
+            fi
+            echo "Candidate smoke attempt ${attempt} returned HTTP ${status}; retrying."
+            sleep 10
+          done
+
+          cat /tmp/workspace-smoke.html || true
+          exit 1
 
       - name: Promote candidate to live traffic
         run: |
@@ -99,4 +117,29 @@ jobs:
 
       - name: Smoke test live site
         run: |
-          curl --fail --silent --show-error --location "${NEXT_PUBLIC_APP_URL}/signin" > /dev/null
+          for attempt in {1..12}; do
+            status="$(curl --silent --show-error --location --output /tmp/workspace-live-smoke.html --write-out "%{http_code}" "${NEXT_PUBLIC_APP_URL}/signin" || true)"
+            if [ "${status}" = "200" ]; then
+              exit 0
+            fi
+            echo "Live smoke attempt ${attempt} returned HTTP ${status}; retrying."
+            sleep 10
+          done
+
+          cat /tmp/workspace-live-smoke.html || true
+          exit 1
+
+      - name: Remove candidate tag
+        if: success()
+        run: |
+          gcloud run services update-traffic "${SERVICE}" \
+            --region "${REGION}" \
+            --remove-tags candidate || true
+
+      - name: Roll back failed deployment
+        if: failure() && steps.deploy.outputs.previous_revision != ''
+        run: |
+          gcloud run services update-traffic "${SERVICE}" \
+            --region "${REGION}" \
+            --to-revisions "${{ steps.deploy.outputs.previous_revision }}=100" \
+            --remove-tags candidate
