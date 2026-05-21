@@ -1,0 +1,66 @@
+name: Deploy Workspace
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: workspace-app-496306
+  PROJECT_NUMBER: "957887582324"
+  REGION: asia-southeast1
+  SERVICE: workspace-app
+  REPOSITORY: workspace
+  IMAGE: workspace-app
+  INSTANCE_CONNECTION_NAME: workspace-app-496306:asia-southeast1:workspace-mysql
+  RUNTIME_SERVICE_ACCOUNT: workspace-app-runner@workspace-app-496306.iam.gserviceaccount.com
+  NEXT_PUBLIC_APP_URL: https://workspace.lexora.ltd
+  WORKLOAD_IDENTITY_PROVIDER: projects/957887582324/locations/global/workloadIdentityPools/github-actions/providers/github
+  DEPLOYER_SERVICE_ACCOUNT: github-actions-deployer@workspace-app-496306.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    name: Build and deploy Cloud Run
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push image
+        run: |
+          IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE}:${GITHUB_SHA}"
+          docker build -t "${IMAGE_URI}" .
+          docker push "${IMAGE_URI}"
+          echo "IMAGE_URI=${IMAGE_URI}" >> "${GITHUB_ENV}"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "${SERVICE}" \
+            --image "${IMAGE_URI}" \
+            --region "${REGION}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --execution-environment gen2 \
+            --max-instances 3 \
+            --service-account "${RUNTIME_SERVICE_ACCOUNT}" \
+            --add-cloudsql-instances "${INSTANCE_CONNECTION_NAME}" \
+            --set-env-vars "NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}" \
+            --set-secrets "DATABASE_URL=workspace-database-url:latest,SESSION_SECRET=workspace-session-secret:latest"
