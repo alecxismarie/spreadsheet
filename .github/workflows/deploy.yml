@@ -87,9 +87,10 @@ jobs:
           REVISION="$(gcloud run services describe "${SERVICE}" \
             --region "${REGION}" \
             --format 'value(status.latestReadyRevisionName)')"
-          CANDIDATE_URL="$(gcloud run services describe "${SERVICE}" \
+          SERVICE_URL="$(gcloud run services describe "${SERVICE}" \
             --region "${REGION}" \
-            --format 'value(status.traffic[?tag="candidate"].url)')"
+            --format 'value(status.url)')"
+          CANDIDATE_URL="https://candidate---${SERVICE_URL#https://}"
 
           echo "previous_revision=${PREVIOUS_REVISION}" >> "${GITHUB_OUTPUT}"
           echo "revision=${REVISION}" >> "${GITHUB_OUTPUT}"
