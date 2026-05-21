@@ -21,7 +21,14 @@ export const PASSWORD_RESET_TOKEN_RATE_LIMIT = {
   lockoutMs: 15 * 60 * 1000
 } as const;
 
+export const SIGNUP_RATE_LIMIT = {
+  maxAttempts: 5,
+  windowMs: 60 * 60 * 1000,
+  lockoutMs: 60 * 60 * 1000
+} as const;
+
 export const RATE_LIMITED_SIGN_IN_MESSAGE = "Too many sign-in attempts. Try again later.";
+export const RATE_LIMITED_SIGNUP_MESSAGE = "Too many workspace signup attempts. Try again later.";
 export const INVALID_SIGN_IN_MESSAGE = "Invalid email or password.";
 
 export function normalizeSignInEmail(email: string) {
@@ -61,6 +68,14 @@ function passwordResetTokenRateLimitKey(token: string, ip: string) {
   const ipHash = hashClientIp(ip);
   return {
     key: hashValue(`password-reset-token:${hashValue(token)}:${ipHash}`),
+    ipHash
+  };
+}
+
+function signupRateLimitKey(email: string, ip: string) {
+  const ipHash = hashClientIp(ip);
+  return {
+    key: hashValue(`signup:${email}:${ipHash}`),
     ipHash
   };
 }
@@ -209,4 +224,45 @@ export async function recordFailedPasswordResetToken(token: string, ip: string, 
 export async function clearPasswordResetTokenRateLimit(token: string, ip: string) {
   const { key } = passwordResetTokenRateLimitKey(token, ip);
   await prisma.authRateLimit.deleteMany({ where: { key } });
+}
+
+export async function isSignupRateLimited(email: string, ip: string, now = new Date()) {
+  const { key } = signupRateLimitKey(email, ip);
+  const record = await prisma.authRateLimit.findUnique({ where: { key } });
+  return Boolean(record?.lockedUntil && record.lockedUntil > now);
+}
+
+export async function recordSignupAttempt(email: string, ip: string, now = new Date()) {
+  const { key, ipHash } = signupRateLimitKey(email, ip);
+  const record = await prisma.authRateLimit.findUnique({ where: { key } });
+  const windowExpired = record ? now.getTime() - record.windowStartedAt.getTime() > SIGNUP_RATE_LIMIT.windowMs : true;
+
+  if (!record || windowExpired) {
+    await prisma.authRateLimit.upsert({
+      where: { key },
+      create: {
+        key,
+        email,
+        ipHash,
+        attempts: 1,
+        windowStartedAt: now,
+        lockedUntil: null
+      },
+      update: {
+        attempts: 1,
+        windowStartedAt: now,
+        lockedUntil: null
+      }
+    });
+    return;
+  }
+
+  const attempts = record.attempts + 1;
+  await prisma.authRateLimit.update({
+    where: { key },
+    data: {
+      attempts,
+      lockedUntil: attempts >= SIGNUP_RATE_LIMIT.maxAttempts ? new Date(now.getTime() + SIGNUP_RATE_LIMIT.lockoutMs) : null
+    }
+  });
 }

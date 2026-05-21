@@ -14,6 +14,7 @@ export default async function SignInPage({
   const params = await searchParams;
   const resetComplete = params.reset === "success";
   const workspaceUnavailable = params.workspace === "inactive";
+  const showDemoCredentials = process.env.NEXT_PUBLIC_SHOW_DEMO_CREDENTIALS === "true" || process.env.NODE_ENV !== "production";
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-canvas px-6 py-12">
@@ -22,7 +23,7 @@ export default async function SignInPage({
           <p className="text-sm font-medium uppercase tracking-[0.18em] text-muted">Sales Oversight</p>
           <h1 className="mt-3 text-2xl font-semibold text-ink">Sign in to your workspace</h1>
           <p className="mt-2 text-sm leading-6 text-muted">
-            Use seeded credentials after running the database seed.
+            Use your workspace credentials to continue.
           </p>
         </div>
         {resetComplete ? (
@@ -36,12 +37,19 @@ export default async function SignInPage({
           </div>
         ) : null}
         <SignInForm />
-        <Link href={"/forgot-password" as Route} className="mt-4 inline-flex text-sm font-semibold text-accent hover:underline" data-testid="forgot-password-link">
-          Forgot password?
-        </Link>
-        <div className="mt-6 rounded-md bg-slate-50 p-4 text-sm text-muted">
-          Demo: owner@northstar.test / demo1234
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <Link href={"/forgot-password" as Route} className="text-sm font-semibold text-accent hover:underline" data-testid="forgot-password-link">
+            Forgot password?
+          </Link>
+          <Link href={"/signup" as Route} className="text-sm font-semibold text-accent hover:underline" data-testid="create-workspace-link">
+            Create a workspace
+          </Link>
         </div>
+        {showDemoCredentials ? (
+          <div className="mt-6 rounded-md bg-slate-50 p-4 text-sm text-muted">
+            Local demo: owner@northstar.test / demo1234
+          </div>
+        ) : null}
       </section>
     </main>
   );
