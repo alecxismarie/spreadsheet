@@ -60,6 +60,7 @@ jobs:
         run: docker push "${IMAGE_URI}"
 
       - name: Deploy to Cloud Run
+        id: deploy
         run: |
           gcloud run deploy "${SERVICE}" \
             --image "${IMAGE_URI}" \
@@ -72,4 +73,30 @@ jobs:
             --service-account "${RUNTIME_SERVICE_ACCOUNT}" \
             --add-cloudsql-instances "${INSTANCE_CONNECTION_NAME}" \
             --set-env-vars "NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}" \
-            --set-secrets "DATABASE_URL=workspace-database-url:latest,SESSION_SECRET=workspace-session-secret:latest"
+            --set-secrets "DATABASE_URL=workspace-database-url:latest,SESSION_SECRET=workspace-session-secret:latest" \
+            --tag candidate \
+            --no-traffic
+
+          REVISION="$(gcloud run services describe "${SERVICE}" \
+            --region "${REGION}" \
+            --format 'value(status.latestReadyRevisionName)')"
+          CANDIDATE_URL="$(gcloud run services describe "${SERVICE}" \
+            --region "${REGION}" \
+            --format 'value(status.traffic[?tag="candidate"].url)')"
+
+          echo "revision=${REVISION}" >> "${GITHUB_OUTPUT}"
+          echo "candidate_url=${CANDIDATE_URL}" >> "${GITHUB_OUTPUT}"
+
+      - name: Smoke test candidate
+        run: |
+          curl --fail --silent --show-error --location "${{ steps.deploy.outputs.candidate_url }}/signin" > /dev/null
+
+      - name: Promote candidate to live traffic
+        run: |
+          gcloud run services update-traffic "${SERVICE}" \
+            --region "${REGION}" \
+            --to-revisions "${{ steps.deploy.outputs.revision }}=100"
+
+      - name: Smoke test live site
+        run: |
+          curl --fail --silent --show-error --location "${NEXT_PUBLIC_APP_URL}/signin" > /dev/null
